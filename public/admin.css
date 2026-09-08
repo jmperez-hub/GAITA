@@ -516,6 +516,77 @@ select {
   margin: 0 4px 4px 0;
 }
 
+/* Insignias de vigencia de póliza (services/polizas.service.js) */
+
+.lo-admin-badge-vigente {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-por-vencer {
+  background: #fff9db;
+  color: #7a6400;
+  border: 1px solid var(--lo-amarillo);
+}
+
+.lo-admin-badge-vencida {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+}
+
+/* Insignias de estado de siniestro (services/siniestros.service.js) */
+
+.lo-admin-badge-siniestro-recibido {
+  background: var(--lo-fondo-chat);
+  color: var(--lo-gris-oscuro);
+  border: 1px solid var(--lo-borde);
+}
+
+.lo-admin-badge-siniestro-pendiente_documentacion {
+  background: #fff9db;
+  color: #7a6400;
+  border: 1px solid var(--lo-amarillo);
+}
+
+.lo-admin-badge-siniestro-en_investigacion {
+  background: #eef3fb;
+  color: #3a5a80;
+  border: 1px solid #cddcf0;
+}
+
+.lo-admin-badge-siniestro-aprobado {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-siniestro-rechazado {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+}
+
+.lo-admin-badge-siniestro-por_pagar {
+  background: #ffe8d1;
+  color: #92400e;
+  border: 1px solid #f5c395;
+}
+
+.lo-admin-badge-siniestro-pagado {
+  background: var(--lo-verde);
+  color: var(--lo-blanco);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-mayor {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #e6453b;
+  font-weight: 700;
+}
+
 /* Insignias de canal (Web / WhatsApp) */
 
 .lo-admin-badge-web {

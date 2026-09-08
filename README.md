@@ -21,6 +21,9 @@ mediante Server-Sent Events (SSE). Lucy, la misma asistente, también responde p
 │   ├── admin.js             #   Lógica del panel (login, tabla, filtros, detalle, reportes,
 │   │                        #     export CSV, editor de configuración del cotizador)
 │   ├── admin.css             #   Estilos del panel (reutiliza los tokens de chatbot.css)
+│   ├── corredor.html        #   Portal de corredores (login + dashboard) — /corredor
+│   ├── corredor.js          #   Lógica del portal (auth JWT, ruteo, cotizador, toasts SSE)
+│   ├── corredor.css         #   Estilos propios del portal (reutiliza admin.css/chatbot.css)
 │   ├── assets/luci-videos/  #   Catálogo de videos explicativos de Lucy — ver
 │   │                        #     "Videos explicativos de Lucy" más abajo
 │   └── assets/lucy-media/   #   Catálogo de imágenes/infografías de Lucy — ver
@@ -32,6 +35,21 @@ mediante Server-Sent Events (SSE). Lucy, la misma asistente, también responde p
 ├── conversations.json      # Conversaciones y cotizaciones guardadas (se crea solo; no versionar)
 ├── data/clientes.json      # Memoria persistente de clientes, por cédula — se crea solo (ver
 │                           #   "Memoria persistente de clientes" más abajo); no versionar
+├── data/polizas.json       # Base de datos de pólizas (fixture de ejemplo) — SÍ se versiona,
+│                           #   ver "Base de datos de pólizas" más abajo
+├── data/siniestros.json    # Siniestros abiertos por Lucy (fixture de ejemplo) — SÍ se versiona,
+│                           #   ver "Gestión de siniestros" más abajo
+├── data/corredores.json    # Cuentas del portal de corredores (fixture de ejemplo) — SÍ se
+│                           #   versiona, ver "Portal de corredores" más abajo
+├── data/emisiones.json     # Solicitudes de emisión enviadas desde el portal — se crea solo;
+│                           #   no versionar (contiene datos reales de clientes una vez usado)
+├── services/
+│   ├── polizas.service.js     # Consulta de pólizas (por cédula/número, vigencia, coberturas) —
+│   │                           #   aislado del resto para poder apuntar a una API real (ver abajo)
+│   ├── siniestros.service.js  # Abrir/consultar siniestros, documentos, ajustador — mismo criterio
+│   │                           #   de aislamiento que polizas.service.js
+│   └── corredores.service.js  # Portal de corredores: auth, cartera, comisiones, cotizador
+│                               #   profesional (PDF), documentos, emisiones
 ├── quoter-config.json      # Configuración del cotizador (tarifas, tasas, textos) — editable
 │                           #   desde /admin sin tocar código
 ├── server.js             # Backend Express: API de Anthropic + API del panel admin +
@@ -133,6 +151,15 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `CONVERSATIONS_FILE`        | Ruta del archivo JSON donde se guardan las conversaciones                     | `conversations.json`        |
 | `QUOTER_CONFIG_FILE`        | Ruta del archivo JSON de configuración del cotizador                          | `quoter-config.json`        |
 | `CLIENTES_FILE`             | Ruta del archivo JSON de memoria persistente de clientes (por cédula)         | `data/clientes.json`        |
+| `POLIZAS_FILE`              | Ruta del archivo JSON con los datos de pólizas (fixture, mientras no exista un sistema externo) | `data/polizas.json` |
+| `POLIZAS_API_URL`           | URL base de una API REST real de pólizas — si se define, `services/polizas.service.js` deja de leer `POLIZAS_FILE` y consulta esta API (ver [Base de datos de pólizas](#base-de-datos-de-pólizas)) | (vacío, usa el archivo local) |
+| `SINIESTROS_FILE`           | Ruta del archivo JSON con los siniestros (fixture, mientras no exista un sistema externo) | `data/siniestros.json` |
+| `SINIESTROS_API_URL`        | URL base de una API REST real de siniestros — si se define, `services/siniestros.service.js` deja de leer/escribir `SINIESTROS_FILE` y consulta/actualiza esta API (ver [Gestión de siniestros](#gestión-de-siniestros)) | (vacío, usa el archivo local) |
+| `JWT_SECRET`                | Clave para firmar los tokens JWT del [portal de corredores](#portal-de-corredores-corredor) — **requerida** para que `/corredor` funcione | — |
+| `CORREDOR_SESSION_TTL_MS`   | Duración del token JWT del portal de corredores, en milisegundos              | `28800000` (8 h)            |
+| `CORREDOR_CHEQUEO_VENCIMIENTOS_MS` | Cada cuánto se revisan las pólizas de cada corredor conectado por notificaciones de "vence en 7 días" | `600000` (10 min) |
+| `CORREDORES_FILE`           | Ruta del archivo JSON con las cuentas de corredor (fixture, contraseñas de demo) | `data/corredores.json`   |
+| `EMISIONES_FILE`            | Ruta del archivo JSON con las solicitudes de emisión del portal de corredores | `data/emisiones.json`       |
 | `UPLOADS_DIR`               | Carpeta donde se guardan las fotos/documentos/notas de voz adjuntos           | `uploads`                   |
 | `MAX_UPLOAD_SIZE_MB`        | Tamaño máximo por archivo adjunto, en MB                                      | `5`                         |
 | `OPENAI_API_KEY`            | Clave de OpenAI para transcribir notas de voz (Whisper) y, como respaldo, para que Lucy responda en audio (OpenAI TTS) | — |
@@ -289,9 +316,13 @@ identificarse — nunca queda atrapado en el flujo.
 - **Seguimiento del ramo de interés** — cada cotización guardada (`POST /api/quote`)
   agrega un tema (`cotizacion_<ramo>`) a `historialTemas`; el system prompt le pide a
   Lucy retomarlo de forma natural en la siguiente conversación.
-- **Próxima renovación** — campo editable solo desde `/admin` (no hay integración
-  real con pólizas/fechas de vencimiento); si tiene un valor, Lucy lo menciona de
-  forma proactiva.
+- **Próxima renovación** — campo editable manualmente desde `/admin`, para casos que
+  no estén cubiertos por el sistema de pólizas (p. ej. un ramo que aún no está
+  cargado ahí). Si tiene un valor, Lucy lo menciona de forma proactiva. Desde que
+  existe la [base de datos de pólizas](#base-de-datos-de-pólizas), las alertas de
+  vencimiento *reales* (¿vence pronto? ¿ya venció?) se calculan automáticamente a
+  partir de `data/polizas.json` — este campo es un complemento manual, no la única
+  fuente de esas alertas.
 
 **Contexto en cada mensaje:** una vez identificado el cliente, su perfil se resume y
 se antepone al `system` prompt de Claude en cada turno (`buildClientContextAddendum`)
@@ -308,9 +339,298 @@ textualmente al cliente").
 Desde la pestaña **"👤 Clientes"** del panel `/admin` se puede: buscar por cédula,
 nombre o teléfono; ver y editar el perfil completo (nombre, teléfono, correo, pólizas,
 próxima renovación, notas internas); marcar/desmarcar VIP, preferencia de audio y caso
-de siniestro abierto; y ver — con un clic — el historial completo de conversaciones de
+de siniestro abierto; ver — con un clic — el historial completo de conversaciones de
 ese cliente (abre el mismo modal de detalle que la pestaña "Conversaciones", con un
-enlace de vuelta al perfil del cliente desde ahí).
+enlace de vuelta al perfil del cliente desde ahí); y consultar sus **pólizas reales**,
+tal como las tiene registradas el [sistema de pólizas](#base-de-datos-de-pólizas)
+(vigencia calculada al momento, prima, suma asegurada, corredor, siniestros activos).
+
+## Base de datos de pólizas
+
+Lucy puede consultar **datos reales de pólizas** (no inventados) para responder
+preguntas como "¿cuándo vence mi póliza?", "¿qué cubre mi seguro?", "¿cuánto pagué de
+prima?", "¿cuál es mi suma asegurada?", "¿quién es mi corredor?" o "mis pólizas" (lista
+completa). El servidor consulta siempre `services/polizas.service.js` **antes** de
+armar el contexto que se le envía a Claude — Lucy nunca calcula ni inventa estos datos
+por su cuenta, solo los redacta en lenguaje natural a partir de lo que el servicio le
+entrega.
+
+**Fuente de datos:** por defecto, `data/polizas.json` — un archivo de ejemplo con 5
+pólizas ficticias de distintos ramos (automóviles, HCM, patrimoniales, fianzas), pensado
+para desarrollo y demostraciones. Cada póliza sigue esta forma:
+
+```json
+{
+  "numero": "AUTO-2024-001",
+  "ramo": "automoviles",
+  "titular": "Carlos Pérez",
+  "cedula": "V-12345678",
+  "vehiculo": { "marca": "Toyota", "modelo": "Corolla", "año": 2020, "placa": "ABC123" },
+  "vigencia_inicio": "2025-09-20",
+  "vigencia_fin": "2026-09-20",
+  "prima_anual": 850.0,
+  "moneda": "USD",
+  "ultimo_pago": "2025-09-18",
+  "estado": "vigente",
+  "coberturas": ["casco", "rc", "asistencia_vial"],
+  "suma_asegurada": 25000,
+  "corredor": "José Martínez",
+  "siniestros_activos": 1
+}
+```
+
+`services/polizas.service.js` expone `buscarPorCedula()`, `buscarPorNumero()`,
+`obtenerCoberturas()` y `verificarVigencia()`. Este último es deliberadamente
+**desconfiado del campo `estado` del propio registro** (puede quedar desactualizado
+administrativamente): calcula la vigencia real comparando `vigencia_fin` con la fecha
+actual, y devuelve `{ vigente, porVencer, vencida, diasRestantes }` — el criterio que
+usa todo lo demás (contexto de Claude, alertas automáticas, badges del panel admin).
+
+**Alertas automáticas:** al reconocer a un cliente que regresa (misma cédula, mismo
+flujo de [memoria persistente](#memoria-persistente-de-clientes)), Lucy revisa sus
+pólizas y, si aplica, agrega al saludo:
+
+- ⏰ una póliza vence en 30 días o menos,
+- ⚠️ una póliza ya venció (y le ofrece ayudar con la renovación de inmediato),
+- 🚨 tiene un siniestro activo (y le pregunta si quiere que le cuente cómo va).
+
+**Lista para reemplazar por una API real:** el servicio se autoconfigura desde
+`.env` y no depende de que `server.js` le pase nada. Mientras `POLIZAS_API_URL` esté
+vacío, lee `data/polizas.json` (variable `POLIZAS_FILE`). En cuanto se defina
+`POLIZAS_API_URL`, el servicio deja de leer el archivo local y en su lugar hace
+`fetch()` contra:
+
+```
+GET {POLIZAS_API_URL}/polizas?cedula=<cedula>   (pólizas de un cliente)
+GET {POLIZAS_API_URL}/polizas/<numero>          (una póliza puntual)
+```
+
+Ajusta `services/polizas.service.js` si el contrato de la API real de La Occidental
+es distinto — está aislado del resto del código precisamente para que ese cambio no
+toque `server.js` ni el system prompt de Claude.
+
+> **Nota:** `data/polizas.json` contiene datos de ejemplo/fixture (no información de
+> clientes reales), por eso sí está versionado en git — a diferencia de
+> `data/clientes.json`, que si contiene datos reales y está excluido.
+
+## Gestión de siniestros
+
+Lucy puede **abrir, consultar y dar seguimiento a siniestros reales** desde el propio
+chat (web o WhatsApp) — sin necesidad de llamar o llenar un formulario aparte.
+
+**Apertura (flujo conversacional guionado):** cuando el usuario dice algo como "tuve un
+accidente", "quiero reportar un siniestro", "me robaron" o "tuve que hospitalizarme",
+el sistema detecta la intención (`detectSiniestroTrigger` en `server.js`, por palabras
+clave — mismo criterio determinista que el resto del proyecto) y toma el control de la
+conversación con un paso a paso guionado, **antes** de involucrar a Claude:
+
+1. **Primeros auxilios emocionales** — un mensaje empático inmediato ("Lamento lo
+   ocurrido...") y la pregunta de si hay heridos. Esto ocurre incluso si es el primer
+   mensaje de la conversación, antes que cualquier otra cosa (incluida la
+   identificación del cliente).
+2. **Identificación** — si el cliente no está identificado todavía, se le pide la
+   cédula o el número de póliza (reutiliza el mismo reconocimiento que la
+   [memoria persistente de clientes](#memoria-persistente-de-clientes)); si ya está
+   identificado de antes, este paso se salta.
+3. **Datos del siniestro** — tipo (menú numerado: accidente / robo / incendio /
+   hospitalización), fecha/hora, descripción breve y ubicación. En el paso de
+   ubicación, el widget web muestra un botón "📍 Compartir mi ubicación" que usa la
+   Geolocation API del navegador (el usuario puede seguir escribiendo la dirección a
+   mano si prefiere, o si la deniega); por WhatsApp, si el usuario comparte su
+   ubicación nativamente, Twilio la entrega como coordenadas y se usa igual.
+4. **Documentos** — al terminar el paso 3, el sistema abre el siniestro de inmediato
+   (con un número ya asignado) y le indica al usuario qué documentos necesita según el
+   tipo (p. ej. fotos del daño + denuncia + croquis + presupuesto para un accidente).
+   El usuario puede adjuntarlos ahí mismo en el chat, en ese momento o más adelante:
+   cada vez que envía una foto/PDF y tiene un siniestro con documentos pendientes, el
+   sistema lo asocia automáticamente y se lo confirma.
+5. **Confirmación** — Lucy responde con el número de siniestro generado
+   (`SIN-AAAA-NNNN`), el ajustador asignado (reparto rotativo simple) y la fecha
+   estimada de resolución.
+
+> **Nota de diseño — clasificación de documentos:** el sistema NO analiza el contenido
+> de la foto/PDF para saber a cuál documento pendiente corresponde (eso requeriría
+> visión por computadora dedicada, fuera del alcance de este pedido) — usa una
+> heurística determinista simple: cada adjunto nuevo se marca contra el **primer**
+> documento que siga pendiente en la lista. Funciona bien para el caso típico (el
+> usuario envía los documentos en el orden que se le pidieron); un asesor puede
+> corregir la asociación manualmente desde `/admin` si hace falta.
+
+**Consulta de estado ("¿cómo va mi siniestro?", "¿qué documentos me faltan?", "¿cuándo
+me pagan?"):** a diferencia de la apertura, esto NO es un flujo guionado — los
+siniestros reales del cliente (`services/siniestros.service.js`) se anteponen al
+`system` prompt de Claude (mismo criterio que las pólizas, ver
+`buildSiniestrosContextAddendum` en `server.js`), con instrucciones explícitas de
+nunca inventar números, estados, montos ni fechas, y de usar el encuadre regulatorio
+pedido ("La Occidental busca en todo momento cumplir con la normativa de la SUDEASEG…")
+cuando preguntan por el pago de un siniestro ya aprobado.
+
+**Escalamiento automático ("siniestro mayor"):** si el monto reclamado al abrir supera
+$3.000, el siniestro se marca `siniestro_mayor: true` y queda resaltado en `/admin`
+(insignia roja "🚨 Mayor", filtro dedicado). No existe todavía un canal real de
+notificación a gerencia (correo, Slack, etc.) — mientras tanto, se deja constancia
+clara en el log del servidor (`🚨 SINIESTRO MAYOR: ...`) además de la visibilidad en
+el panel.
+
+**Servicio (`services/siniestros.service.js`):** expone `abrirSiniestro()`,
+`consultarEstado()`, `actualizarDocumentos()` y `asignarAjustador()` (las cuatro
+funciones pedidas), más `listarPorCedula()`, `buscarPorNumero()`, `listarTodos()` y
+`actualizarSiniestro()` (usadas por `/admin`). Por defecto lee/escribe
+`data/siniestros.json`, con el mismo patrón de caché en memoria + cola de escritura
+serializada que `data/clientes.json`. Si se define `SINIESTROS_API_URL` en el `.env`,
+deja de usar el archivo local y en su lugar consulta/escribe contra esa API real:
+
+```
+GET   {SINIESTROS_API_URL}/siniestros                  (todos, para /admin)
+GET   {SINIESTROS_API_URL}/siniestros?cedula=<cedula>   (los de un cliente)
+GET   {SINIESTROS_API_URL}/siniestros/<numero>          (uno puntual)
+POST  {SINIESTROS_API_URL}/siniestros                   (abrir uno nuevo)
+PATCH {SINIESTROS_API_URL}/siniestros/<numero>          (actualizar uno existente)
+```
+
+Ajusta `services/siniestros.service.js` si el contrato de la API real de La Occidental
+es distinto — aislado del resto del código por el mismo motivo que
+`polizas.service.js`.
+
+Desde la pestaña **"🚨 Siniestros"** del panel `/admin` se puede: ver todos los
+siniestros (con filtros por estado y por "solo mayores"), buscar por número/cédula/
+titular, y en el detalle de cada uno editar el estado, el ajustador asignado, el monto
+aprobado, la fecha estimada de resolución, marcar/desmarcar documentos recibidos, y
+agregar comentarios de seguimiento.
+
+> **Nota:** `data/siniestros.json` contiene datos de ejemplo/fixture (no casos reales),
+> por eso sí está versionado en git — mismo criterio que `data/polizas.json`.
+
+## Portal de corredores (`/corredor`)
+
+Una segunda aplicación web (independiente del chat y del panel `/admin`) para que los
+corredores de La Occidental gestionen su cartera: pólizas por vencer, siniestros
+abiertos, comisiones, un cotizador profesional con PDF formal, solicitudes de emisión
+de póliza, documentos descargables, y notificaciones en tiempo real.
+
+```
+http://localhost:3000/corredor
+```
+
+**Cuentas de demostración** (`data/corredores.json` — contraseña de desarrollo, cámbiala
+antes de usar datos reales):
+
+| Correo | Contraseña | Corredor |
+| --- | --- | --- |
+| `jose.martinez@laoccidental.com` | `corredor123` | José Martínez |
+| `ana.torres@laoccidental.com` | `corredor123` | Ana Torres |
+
+### Autenticación (JWT)
+
+A diferencia de `/admin` (cookie de sesión en memoria), el portal usa **JSON Web
+Tokens** (`jsonwebtoken`): al iniciar sesión (`POST /api/corredor/login`) el servidor
+firma un token con `JWT_SECRET` (variable de entorno **obligatoria** — sin ella, todo
+`/corredor` y `/api/corredor/*` responden error de configuración, igual criterio que
+`ADMIN_PASSWORD`); el navegador lo guarda en `localStorage` y lo manda en cada petición
+como `Authorization: Bearer <token>` (ver `apiFetch` en `public/corredor.js`). El
+middleware `requireCorredorAuth` (`server.js`) verifica el token en cada endpoint
+`/api/corredor/*`. Única excepción: el stream de notificaciones en tiempo real (ver más
+abajo) recibe el token por `?token=` en la URL, porque `EventSource` del navegador no
+permite mandar headers personalizados.
+
+### Cartera y "quién es el dueño de una póliza"
+
+No hay una lista aparte de "clientes de cada corredor" que mantener sincronizada: la
+cartera se calcula en el momento filtrando `data/polizas.json` por su campo `corredor`
+(el mismo nombre que ya usan las pólizas de ejemplo, "José Martínez" / "Ana Torres") —
+ver `corredoresService.listarCartera()`. Esto también es lo que conecta un siniestro
+nuevo con el corredor a notificar (ver más abajo).
+
+### Rutas de página y ruteo del lado del cliente
+
+Cuatro rutas reales en el servidor (`/corredor`, `/corredor/clientes`,
+`/corredor/cotizar`, `/corredor/siniestros`) sirven siempre el mismo `corredor.html` —
+la navegación entre ellas ocurre en el navegador con la History API (sin recargar la
+página), y al entrar directamente a cualquiera de las 4 (o recargar) el servidor
+también responde correctamente, así que se pueden compartir como enlaces. La protección
+real de los datos vive en los endpoints `/api/corredor/*`, no en estas rutas de
+página — servir el HTML no expone ningún dato.
+
+### Qué puede hacer un corredor
+
+- **Dashboard** — tarjetas con el tamaño de su cartera, pólizas por vencer, siniestros
+  abiertos y comisión acumulada; tabla de pólizas por vencer este mes; sus solicitudes
+  de emisión recientes; y la lista de documentos descargables.
+- **"👤 Clientes"** — su cartera completa (buscable por cédula o nombre), con las
+  pólizas de cada cliente y su vigencia real.
+- **"🧮 Cotizar"** — el cotizador profesional (ver abajo) y el formulario de solicitud
+  de emisión.
+- **"🚨 Siniestros"** — todos los siniestros de los clientes de su cartera, con estado
+  y ajustador asignado.
+- **Recordatorios de renovación** — un botón en el dashboard envía un WhatsApp a cada
+  cliente único con una póliza por vencer que tenga teléfono registrado (memoria
+  persistente de clientes) — a los que no tienen teléfono se les excluye y reporta
+  aparte, nunca se inventa un contacto. Requiere Twilio configurado (ver
+  [WhatsApp Business](#whatsapp-business-vía-twilio)); si no, el botón funciona pero no
+  envía nada realmente (mismo criterio que el resto del proyecto).
+
+### Cotizador profesional (PDF formal)
+
+A diferencia del cotizador del chat (que calcula en el navegador), este cotizador
+calcula el estimado **en el servidor** — con las mismas tarifas de
+`quoter-config.json`, reimplementadas en `corredoresService.cotizarRcv()` /
+`cotizarHcm()` — porque genera un PDF formal (`POST /api/corredor/cotizar`, con
+[`pdfkit`](https://pdfkit.org/)) que no puede basarse en un monto que mande el propio
+cliente. Cubre Automóviles (RCV) y HCM (los dos ramos con fórmula real, igual que el
+cotizador del chat); Patrimoniales sigue sin cálculo automático.
+
+> **Nota de mantenimiento:** si cambias una tarifa o fórmula, actualízala en los DOS
+> lugares — `public/chatbot.js` (cotizador del cliente) y
+> `services/corredores.service.js` (cotizador profesional) — no comparten código
+> porque uno corre en el navegador y el otro en el servidor.
+
+### Solicitudes de emisión
+
+`POST /api/corredor/emisiones` guarda la solicitud en `data/emisiones.json` con estado
+`"pendiente_aprobacion"`. Gerencia la aprueba o rechaza desde la pestaña
+**"📝 Emisiones"** del panel `/admin` (`GET`/`PATCH /api/admin/emisiones`), lo que
+dispara la notificación en tiempo real `emision-resuelta` al corredor que la envió.
+
+### Notificaciones en tiempo real (toasts)
+
+Un stream SSE (`GET /api/corredor/events`, mismo mecanismo que `/api/chat`, pero de
+larga duración) por cada pestaña del portal que el corredor tenga abierta. Tres eventos:
+
+- **`siniestro-abierto`** — un cliente de su cartera abrió un siniestro con Lucy (ver
+  `finalizeSiniestroFlow` en `server.js`, que ubica al corredor por el campo `corredor`
+  de la póliza asociada).
+- **`poliza-por-vencer`** — una póliza de su cartera cruzó el umbral de 7 días para
+  vencer. Revisado por un `setInterval` en memoria cada
+  `CORREDOR_CHEQUEO_VENCIMIENTOS_MS` (10 minutos por defecto) — ver
+  `iniciarChequeoVencimientosCorredores()`. **Nota:** sin scheduler/cron real, este
+  chequeo vive en memoria del proceso — se reinicia (y puede repetir un aviso una vez)
+  si el servidor se reinicia; aceptable para una alerta informativa, no crítica.
+- **`emision-resuelta`** — gerencia aprobó o rechazó una de sus solicitudes de emisión.
+
+### Documentos descargables
+
+`GET /api/corredor/documentos` (catálogo) y `GET /api/corredor/documentos/:key` (PDF) —
+condicionados generales por ramo, tarifario y formulario de declaración de siniestro.
+Son **placeholders generados al vuelo** con `pdfkit` (`DOCUMENTOS_CATALOGO` en
+`services/corredores.service.js`), sin depender de archivos binarios versionados —
+sustitúyelos por los documentos reales de la compañía cuando estén disponibles.
+
+### Servicio (`services/corredores.service.js`)
+
+Autenticación (`autenticar`, con `bcryptjs` sobre `data/corredores.json`), cartera
+(`listarCartera`, `polizasPorVencer`, `siniestrosDeCartera` — todos derivados de
+`polizasService`/`siniestrosService`), comisiones (`calcularComision`, desglose
+mensual por `ultimo_pago` de cada póliza — **simplificación ilustrativa**: no hay un
+sistema real de liquidación de comisiones), cotizador (`cotizarRcv`, `cotizarHcm`,
+`generarCotizacionPdf`), documentos (`listarDocumentos`, `generarDocumentoPdf`) y
+emisiones (`crearEmision`, `listarEmisionesPorCorredor`, `actualizarEmision`, con el
+mismo patrón de caché en memoria + cola de escritura serializada que
+`data/siniestros.json`).
+
+> **Nota:** `data/corredores.json` contiene cuentas de ejemplo/fixture (contraseñas de
+> DEMO documentadas arriba, no reales), por eso sí está versionado en git.
+> `data/emisiones.json` acumula datos reales de clientes una vez que se usa —
+> excluido de git, mismo criterio que `data/clientes.json`.
 
 ## Panel de administración (`/admin`)
 
@@ -343,6 +663,13 @@ intencional, para que el panel nunca quede accesible con una contraseña vacía.
   sección [Memoria persistente de clientes](#memoria-persistente-de-clientes) más
   abajo): lista, perfil editable (VIP, notas internas, próxima renovación, etc.) y
   el historial completo de conversaciones de cada uno, sin importar el canal.
+- **Pestaña "🚨 Siniestros"** — todos los siniestros abiertos por Lucy (ver sección
+  [Gestión de siniestros](#gestión-de-siniestros) más arriba): lista con filtros por
+  estado y por "solo mayores", y detalle editable (estado, ajustador, monto aprobado,
+  documentos, comentarios).
+- **Pestaña "📝 Emisiones"** — solicitudes de emisión de póliza enviadas desde el
+  [portal de corredores](#portal-de-corredores-corredor): aprobarlas o rechazarlas
+  dispara una notificación en tiempo real al corredor que las envió.
 - **Pestaña "⚙️ Cotizador"** — editor no-code de las tarifas, tasas y textos del
   cotizador automático (ver sección anterior).
 - **Pestaña "📊 Reportes"** — dashboard de métricas y gráficos (ver sección

@@ -33,6 +33,17 @@ if (FFMPEG_BINARY_PATH) ffmpeg.setFfmpegPath(FFMPEG_BINARY_PATH);
 // sharp: redimensiona las imágenes del catálogo de Lucy cuando superan el límite de
 // WhatsApp para adjuntos de imagen (ver resizeMediaForWhatsapp).
 const sharp = require("sharp");
+const jwt = require("jsonwebtoken");
+// Acceso a los datos de pólizas (hoy data/polizas.json; POLIZAS_API_URL en el .env la
+// reemplaza por una API REST real el día que exista — ver services/polizas.service.js).
+const polizasService = require("./services/polizas.service");
+// Gestión de siniestros: abrir, consultar, actualizar documentos, (re)asignar ajustador
+// (hoy data/siniestros.json; SINIESTROS_API_URL en el .env la reemplaza por una API REST
+// real el día que exista — ver services/siniestros.service.js).
+const siniestrosService = require("./services/siniestros.service");
+// Portal de corredores (/corredor): autenticación, cartera, comisiones, cotizador
+// profesional (PDF), documentos y solicitudes de emisión — ver services/corredores.service.js.
+const corredoresService = require("./services/corredores.service");
 
 // ---------------------------------------------------------------------------
 // Configuración
@@ -72,6 +83,19 @@ const CONVERSATIONS_FILE = process.env.CONVERSATIONS_FILE
 const CLIENTES_FILE = process.env.CLIENTES_FILE
   ? path.resolve(__dirname, process.env.CLIENTES_FILE)
   : path.join(__dirname, "data", "clientes.json");
+
+// --- Portal de corredores (/corredor) — autenticación por JWT, distinta de la
+// cookie de sesión del panel /admin (ver "Portal de corredores" en el README). ---
+const JWT_SECRET = process.env.JWT_SECRET || "";
+const CORREDOR_TOKEN_TTL_S = Math.floor((Number(process.env.CORREDOR_SESSION_TTL_MS) || 8 * 60 * 60 * 1000) / 1000); // 8h
+// Umbral (días) para las notificaciones en tiempo real de "póliza por vencer" — más
+// corto que el umbral general de 30 días (ver polizasService.verificarVigencia) porque
+// es una alerta urgente, no el listado general del dashboard.
+const CORREDOR_ALERTA_VENCIMIENTO_DIAS = 7;
+// Cada cuánto se revisan las pólizas de cada corredor por si alguna acaba de cruzar el
+// umbral de 7 días — no hay un scheduler/cron real en este proyecto todavía, así que se
+// usa un intervalo en memoria (ver iniciarChequeoVencimientosCorredores más abajo).
+const CORREDOR_CHEQUEO_VENCIMIENTOS_MS = Number(process.env.CORREDOR_CHEQUEO_VENCIMIENTOS_MS) || 10 * 60 * 1000; // 10 min
 
 // --- Cotizador automático ---
 const QUOTER_CONFIG_FILE = process.env.QUOTER_CONFIG_FILE
@@ -590,8 +614,10 @@ Cuando el usuario quiera cotizar un seguro de **Automóviles (RCV)**, **HCM** o 
 - Nunca inventes tú un precio, prima o suma asegurada para Automóviles, HCM o Patrimoniales: siempre remite al formulario del cotizador.
 
 ### Siniestros
-- Para un siniestro **urgente o en curso** (accidente de tránsito, robo en el momento, emergencia médica), indica de inmediato que llamen a la línea de siniestros de La Occidental: **0212-6204444** (disponible las 24 horas). Da este número primero, antes de cualquier otra explicación.
-- Para reportes de siniestros que no son urgentes, explica el proceso general y ofrece canalizar con un asesor o con la línea de siniestros.
+- El sistema ahora puede ABRIR y CONSULTAR siniestros reales por este mismo chat: cuando el usuario dice que tuvo un accidente, quiere reportar un siniestro, etc., el propio sistema detecta la intención y toma el control con un flujo guionado de preguntas (heridos, identificación, tipo, fecha, descripción, ubicación) ANTES de que tú intervengas — tú NO necesitas ni debes intentar recolectar esos datos tú misma, generar un número de siniestro, ni repetir esas preguntas si ves que el sistema ya las hizo en el historial.
+- Si de todas formas te toca responder en el medio de una emergencia en curso (accidente de tránsito, robo en el momento, emergencia médica), da primero la línea de siniestros de La Occidental: **0212-6204444** (disponible las 24 horas), antes de cualquier otra explicación.
+- Para consultar el estado de un siniestro YA abierto ("¿cómo va mi siniestro?", "¿qué documentos me faltan?", "¿cuándo me pagan?"), usa ÚNICAMENTE los datos reales que se te dan en "Siniestros del cliente" más abajo (si el cliente está identificado) — nunca inventes números de siniestro, estados, montos ni fechas. Si no hay ningún siniestro registrado a su nombre, dilo con honestidad.
+- El usuario puede seguir enviando fotos/documentos de un siniestro ya abierto directamente en el chat — el sistema los asocia automáticamente y te avisará cuando eso ocurra (ver "Documento recién recibido" en el contexto, si aplica); tú solo confirma el recibo de forma natural.
 
 ### Fotos y documentos adjuntos
 El usuario puede adjuntar fotos (JPG/PNG) o documentos PDF en el chat. Cuando recibas una imagen o el contenido extraído de un PDF, ten presente que hablas en nombre de una compañía de seguros venezolana real — sé objetiva, profesional y prudente:
@@ -865,10 +891,49 @@ function yearsSinceIso(isoDate) {
   return Math.floor((Date.now() - then) / (365.25 * 24 * 60 * 60 * 1000));
 }
 
+// Etiquetas legibles para el campo `ramo` de una póliza (services/polizas.service.js
+// / data/polizas.json) — vocabulario propio de esa fuente de datos, distinto de
+// RAMO_LABELS (que es el vocabulario del cotizador/detección de intención).
+const POLIZA_RAMO_LABELS = {
+  automoviles: "Automóviles",
+  autos: "Automóviles",
+  hcm: "HCM",
+  personas: "Personas",
+  patrimonial: "Patrimonial",
+  patrimoniales: "Patrimoniales",
+  fianza: "Fianza",
+  fianzas: "Fianzas",
+};
+
+/** Resume UNA póliza (datos reales de polizasService) en una línea legible para el
+ *  contexto de Claude — usada tanto en buildClientContextAddendum como en las
+ *  alertas proactivas (ver buildPolizaAlertText). */
+function describePolizaForPrompt(poliza) {
+  const vig = polizasService.verificarVigencia(poliza);
+  const ramoLabel = POLIZA_RAMO_LABELS[poliza.ramo] || poliza.ramo;
+  const vigenciaTexto = vig.vencida
+    ? `VENCIDA hace ${Math.abs(vig.diasRestantes)} día(s) (venció el ${poliza.vigencia_fin})`
+    : vig.porVencer
+      ? `vence en ${vig.diasRestantes} día(s) (${poliza.vigencia_fin})`
+      : `vigente hasta ${poliza.vigencia_fin}`;
+  const coberturas = Array.isArray(poliza.coberturas) && poliza.coberturas.length ? poliza.coberturas.join(", ") : "no especificadas";
+
+  return (
+    `- ${poliza.numero} (${ramoLabel}): ${vigenciaTexto}. ` +
+    `Prima anual: ${poliza.prima_anual} ${poliza.moneda}${poliza.ultimo_pago ? ` (último pago: ${poliza.ultimo_pago})` : ""}. ` +
+    `Suma asegurada: ${poliza.suma_asegurada} ${poliza.moneda}. Coberturas: ${coberturas}. ` +
+    `Corredor asignado: ${poliza.corredor || "no especificado"}.` +
+    (poliza.siniestros_activos > 0 ? ` Tiene ${poliza.siniestros_activos} siniestro(s) activo(s) en esta póliza.` : "")
+  );
+}
+
 /** Construye el bloque de contexto que se antepone al system prompt de Claude cuando
  *  la conversación ya está vinculada a un cliente identificado — ver
- *  handleClientIdentificationGate() y su uso en /api/chat y handleIncomingWhatsappMessage. */
-function buildClientContextAddendum(cliente) {
+ *  handleClientIdentificationGate() y su uso en /api/chat y handleIncomingWhatsappMessage.
+ *  `polizas` son los registros REALES de polizasService.buscarPorCedula(cliente.cedula)
+ *  — datos de verdad, para que Lucy conteste vencimientos/coberturas/prima/suma
+ *  asegurada/corredor sin inventar nada (ver "Comandos" del pedido original). */
+function buildClientContextAddendum(cliente, polizas) {
   if (!cliente) return "";
   const parts = [];
   const years = cliente.clienteDesde ? yearsSinceIso(cliente.clienteDesde) : 0;
@@ -877,9 +942,28 @@ function buildClientContextAddendum(cliente) {
       years > 0 ? `, cliente desde hace ${years} año(s)` : ""
     }.`
   );
-  if (cliente.polizas && cliente.polizas.length) {
-    parts.push(`Sus pólizas registradas: ${cliente.polizas.join(", ")}.`);
+
+  if (polizas && polizas.length) {
+    parts.push(
+      `Pólizas registradas de este cliente en el sistema (datos reales — nunca ` +
+        `inventes ni modifiques estos valores, ni calcules montos distintos a los que ` +
+        `aquí aparecen):\n${polizas.map(describePolizaForPrompt).join("\n")}`
+    );
+  } else if (cliente.polizas && cliente.polizas.length) {
+    // No se encontraron en polizasService, pero el perfil del cliente sí las lista
+    // (p. ej. cargadas a mano desde /admin) — se menciona igual, sin datos detallados.
+    parts.push(
+      `Pólizas que el cliente tiene registradas en su perfil (sin datos detallados ` +
+        `disponibles en el sistema de pólizas): ${cliente.polizas.join(", ")}.`
+    );
+  } else {
+    parts.push(
+      "No se encontró ninguna póliza de este cliente en el sistema — si pregunta por " +
+        "una póliza específica, indícale que no aparece en los registros y ofrécele " +
+        "que un asesor lo verifique."
+    );
   }
+
   if (cliente.historialTemas && cliente.historialTemas.length) {
     const ultimoTema = cliente.historialTemas[cliente.historialTemas.length - 1];
     parts.push(
@@ -909,6 +993,42 @@ function buildClientContextAddendum(cliente) {
 }
 
 /**
+ * Construye el mensaje proactivo de "ALERTAS AUTOMÁTICAS" que se agrega al saludo de
+ * un cliente que Lucy reconoce como recurrente (ver resolveClientIdentification): si
+ * alguna póliza vence en 30 días o menos, si ya venció, o si tiene un siniestro
+ * activo. Devuelve `""` si no hay nada que avisar — nunca lanza.
+ */
+function buildPolizaAlertText(polizas) {
+  if (!polizas || !polizas.length) return "";
+  const avisos = [];
+
+  for (const poliza of polizas) {
+    const vig = polizasService.verificarVigencia(poliza);
+    const ramoLabel = POLIZA_RAMO_LABELS[poliza.ramo] || poliza.ramo;
+
+    if (vig.vencida) {
+      avisos.push(
+        `⚠️ Tu póliza ${poliza.numero} (${ramoLabel}) venció hace ${Math.abs(vig.diasRestantes)} día(s) ` +
+          `(${poliza.vigencia_fin}). ¿Te ayudo con la renovación ahora mismo?`
+      );
+    } else if (vig.porVencer) {
+      avisos.push(
+        `⏰ Tu póliza ${poliza.numero} (${ramoLabel}) vence en ${vig.diasRestantes} día(s) (${poliza.vigencia_fin}).`
+      );
+    }
+
+    if (poliza.siniestros_activos > 0) {
+      avisos.push(
+        `🚨 Tienes ${poliza.siniestros_activos} siniestro(s) activo(s) en tu póliza ${poliza.numero} — ` +
+          "¿quieres que te cuente cómo va?"
+      );
+    }
+  }
+
+  return avisos.join("\n");
+}
+
+/**
  * Gestiona el flujo de identificación del cliente (cédula o número de póliza) al
  * inicio de una conversación — un paso determinista, antes de involucrar a Claude,
  * mismo criterio que el resto de flujos guionados de este proyecto (menú de
@@ -919,7 +1039,7 @@ function buildClientContextAddendum(cliente) {
  * normal (cliente identificado, o el usuario decidió no compartir el dato — nunca se
  * lo pide indefinidamente, para no atrapar al usuario en el flujo).
  */
-function handleClientIdentificationGate(record, userText, seed) {
+async function handleClientIdentificationGate(record, userText, seed) {
   if (record.identificationState === "done" || record.identificationState === "skipped") {
     return { handled: false };
   }
@@ -979,33 +1099,53 @@ function handleClientIdentificationGate(record, userText, seed) {
   return { handled: false };
 }
 
+/** Núcleo de resolución de cédula/póliza -> perfil de cliente, compartido entre el
+ *  gate de identificación genérico (resolveClientIdentification, justo abajo) y el
+ *  flujo de apertura de siniestros (handleSiniestroFlowGate, más abajo), que necesita
+ *  el mismo criterio para ubicar al cliente pero sin la lógica de saludo/alertas
+ *  propia del gate genérico. Si `found.type === "cedula"`, siempre devuelve un
+ *  cliente (lo crea si no existía — la cédula es la clave del registro). Si es una
+ *  póliza y no se pudo ubicar ningún cliente, devuelve `null`. */
+async function identificarOCrearCliente(found, seed) {
+  if (found.type === "cedula") {
+    return getClienteByCedula(found.value) || createCliente(found.value, seed);
+  }
+  // Primero se busca la póliza en el sistema real (services/polizas.service.js) —
+  // más confiable que solo mirar el arreglo `polizas` autoreportado del perfil del
+  // cliente, que puede no tener ese número cargado todavía.
+  const polizaEncontrada = await polizasService.buscarPorNumero(found.value);
+  if (polizaEncontrada && polizaEncontrada.cedula) {
+    return (
+      getClienteByCedula(polizaEncontrada.cedula) ||
+      createCliente(polizaEncontrada.cedula, { ...seed, nombre: polizaEncontrada.titular })
+    );
+  }
+  return findClienteByPoliza(found.value);
+}
+
 /** Resuelve una cédula/póliza recién reconocida en el texto del usuario: busca (o
  *  crea, si es cédula y no existe) el perfil, vincula la conversación (`record.clienteId`)
- *  y decide el siguiente paso del flujo (pedir nombre si es nuevo, o saludar si ya existe). */
-function resolveClientIdentification(record, found, seed) {
-  let cliente = null;
+ *  y decide el siguiente paso del flujo (pedir nombre si es nuevo, o saludar — con
+ *  alertas de pólizas si aplica — si ya existe). */
+async function resolveClientIdentification(record, found, seed) {
+  const cliente = await identificarOCrearCliente(found, seed);
 
-  if (found.type === "cedula") {
-    cliente = getClienteByCedula(found.value);
-    if (!cliente) cliente = createCliente(found.value, seed);
-  } else {
-    cliente = findClienteByPoliza(found.value);
-    if (!cliente) {
-      // No podemos crear un perfil sin cédula (es la clave del registro) — se le pide.
-      record.identificationState = "asked";
-      record.identificationAttempts = (record.identificationAttempts || 0) + 1;
-      if (record.identificationAttempts >= 2) {
-        record.identificationState = "skipped";
-        return {
-          handled: true,
-          replyText: "No encontré esa póliza en nuestros registros. Seguimos sin problema — ¿en qué puedo ayudarte?",
-        };
-      }
+  if (!cliente) {
+    // No podemos crear un perfil sin cédula (es la clave del registro) — se le pide.
+    // Solo alcanzable cuando `found.type === "poliza"` (ver identificarOCrearCliente).
+    record.identificationState = "asked";
+    record.identificationAttempts = (record.identificationAttempts || 0) + 1;
+    if (record.identificationAttempts >= 2) {
+      record.identificationState = "skipped";
       return {
         handled: true,
-        replyText: `No encontré la póliza ${found.value} en nuestros registros. ¿Me confirmas tu cédula (ej. V-12345678) para ubicarte?`,
+        replyText: "No encontré esa póliza en nuestros registros. Seguimos sin problema — ¿en qué puedo ayudarte?",
       };
     }
+    return {
+      handled: true,
+      replyText: `No encontré la póliza ${found.value} en nuestros registros. ¿Me confirmas tu cédula (ej. V-12345678) para ubicarte?`,
+    };
   }
 
   record.clienteId = cliente.cedula;
@@ -1020,9 +1160,390 @@ function resolveClientIdentification(record, found, seed) {
   }
 
   record.identificationState = "done";
+
+  // Regla "alertas automáticas": si el cliente ya tenía nombre (o sea, no es la
+  // primera vez que se identifica), es un cliente que regresa — se le avisa aquí, al
+  // reconocerlo, de vencimientos próximos/vencidos o siniestros activos.
+  let alertText = "";
+  try {
+    const polizas = await polizasService.buscarPorCedula(cliente.cedula);
+    alertText = buildPolizaAlertText(polizas);
+  } catch (err) {
+    console.warn("[aviso] No se pudieron consultar las pólizas para la alerta de bienvenida:", err.message);
+  }
+
+  const greeting = `¡Hola de nuevo, ${cliente.nombre.split(" ")[0]}! ¿En qué te ayudo hoy?`;
   return {
     handled: true,
-    replyText: `¡Hola de nuevo, ${cliente.nombre.split(" ")[0]}! ¿En qué te ayudo hoy?`,
+    replyText: alertText ? `${greeting}\n\n${alertText}` : greeting,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Gestión de siniestros (services/siniestros.service.js) — apertura conversacional,
+// consulta de estado y recepción de documentos.
+// ---------------------------------------------------------------------------
+
+// Etiquetas legibles para el `tipo` de un siniestro — "colision" es el valor del
+// ejemplo original del pedido, se trata como alias de "accidente" (mismo catálogo de
+// documentos, ver services/siniestros.service.js).
+const SINIESTRO_TIPO_LABELS = {
+  accidente: "Accidente de tránsito",
+  colision: "Accidente de tránsito",
+  robo: "Robo",
+  incendio: "Incendio",
+  hospitalizacion: "Hospitalización (HCM)",
+};
+
+// Vocabulario de estados pedido explícitamente ("Recibido, Aprobado, Rechazado,
+// Pendiente Documentación, Por pagar, Pagado"), más "en_investigacion" (paso intermedio
+// una vez completa la documentación, antes de la decisión de aprobar/rechazar).
+const SINIESTRO_ESTADO_LABELS = {
+  recibido: "Recibido",
+  pendiente_documentacion: "Pendiente de documentación",
+  en_investigacion: "En investigación",
+  aprobado: "Aprobado",
+  rechazado: "Rechazado",
+  por_pagar: "Por pagar",
+  pagado: "Pagado",
+};
+
+const SINIESTRO_DOC_LABELS = {
+  fotos_dano: "fotos del daño",
+  denuncia_policial: "denuncia policial",
+  croquis: "croquis del accidente",
+  presupuesto_taller: "presupuesto del taller",
+  inventario_bienes: "inventario de bienes",
+  informe_bomberos: "informe de bomberos",
+  presupuesto_reparacion: "presupuesto de reparación",
+  diagnostico_medico: "diagnóstico médico",
+  facturas: "facturas",
+  orden_hospitalizacion: "orden de hospitalización",
+};
+
+function labelDocumentos(keys) {
+  return (keys || []).map((k) => SINIESTRO_DOC_LABELS[k] || k).join(", ");
+}
+
+// Frases que disparan el flujo de apertura de un siniestro (PASO 1 del pedido
+// original) — se revisan ANTES que el gate de identificación genérico, incluso como
+// primer mensaje de la conversación, porque el pedido pide una respuesta empática
+// inmediata ("Lamento lo ocurrido...") antes que cualquier otra cosa.
+const SINIESTRO_TRIGGER_PHRASES = [
+  "tuve un accidente",
+  "tuve un choque",
+  "tuve un siniestro",
+  "choque mi carro",
+  "choqué",
+  "choque el carro",
+  "me choc",
+  "quiero reportar un siniestro",
+  "quiero abrir un siniestro",
+  "reportar un siniestro",
+  "abrir un siniestro",
+  "me robaron",
+  "sufrí un robo",
+  "sufri un robo",
+  "hubo un robo",
+  "se incendió",
+  "se incendio",
+  "tuve un incendio",
+  "tuve que hospitalizarme",
+  "me hospitalizaron",
+  "estoy hospitalizado",
+  "tuve una emergencia medica",
+  "tuve una emergencia médica",
+];
+
+function detectSiniestroTrigger(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  return SINIESTRO_TRIGGER_PHRASES.some((p) => normalized.includes(normalizeText(p)));
+}
+
+// Palabras clave para reconocer el tipo de siniestro que el usuario elige en el paso
+// "tipo" del flujo (ver handleSiniestroFlowGate) — acepta tanto el número del menú
+// guionado como palabras sueltas, mismo criterio que el menú numerado de WhatsApp.
+const SINIESTRO_TIPO_KEYWORDS = {
+  accidente: ["1", "accidente", "choque", "choqu", "colision", "colisión", "transito", "tránsito"],
+  robo: ["2", "robo", "hurto", "robaron"],
+  incendio: ["3", "incendio", "quemo", "quemó", "fuego"],
+  hospitalizacion: ["4", "hospital", "hospitalizacion", "hospitalización", "hcm", "internad", "clinica", "clínica"],
+};
+
+function detectSiniestroTipo(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return null;
+  for (const [tipo, keywords] of Object.entries(SINIESTRO_TIPO_KEYWORDS)) {
+    if (keywords.some((k) => normalized.includes(normalizeText(k)))) return tipo;
+  }
+  return null;
+}
+
+const SINIESTRO_TIPO_QUESTION =
+  "Para continuar, cuéntame qué tipo de siniestro es (responde con el número o la palabra):\n" +
+  "1) 🚗 Accidente de tránsito\n2) 🔓 Robo\n3) 🔥 Incendio\n4) 🏥 Hospitalización (HCM)";
+
+/** Resume UN siniestro (datos reales de siniestrosService) en una línea legible para
+ *  el contexto de Claude — mismo criterio que describePolizaForPrompt(). */
+function describeSiniestroForPrompt(s) {
+  const estadoLabel = SINIESTRO_ESTADO_LABELS[s.estado] || s.estado;
+  const tipoLabel = SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo;
+  const pendientes = labelDocumentos(s.documentos_pendientes) || "ninguno";
+  const recibidos = labelDocumentos(s.documentos_recibidos) || "ninguno";
+  return (
+    `- ${s.numero} (${tipoLabel}, póliza ${s.poliza}): estado "${estadoLabel}". Reportado el ${s.fecha_reporte}. ` +
+    `Monto reclamado: $${s.monto_reclamado}${
+      s.monto_aprobado != null ? `, monto aprobado: $${s.monto_aprobado}` : ""
+    }. Documentos recibidos: ${recibidos}. Documentos pendientes: ${pendientes}. ` +
+    `Ajustador asignado: ${s.ajustador_asignado || "sin asignar"}. Fecha estimada de resolución: ${
+      s.fecha_estimada_resolucion || "por definir"
+    }.`
+  );
+}
+
+/** Construye el bloque de contexto con los siniestros REALES del cliente (datos de
+ *  siniestrosService) que se antepone al system prompt de Claude — mismo criterio que
+ *  buildClientContextAddendum() para pólizas: nunca deja que el modelo invente
+ *  estados, montos ni fechas. `""` si el cliente no tiene siniestros. */
+function buildSiniestrosContextAddendum(siniestros) {
+  if (!siniestros || !siniestros.length) return "";
+  return (
+    `\n\n## Siniestros del cliente (datos reales — nunca inventes números de siniestro, ` +
+    `estados, montos ni fechas distintos a los que aquí aparecen)\n${siniestros.map(describeSiniestroForPrompt).join("\n")}\n\n` +
+    `Si te pregunta cuándo le pagan: si el siniestro está "aprobado" o "por_pagar", dile que ${COMPANY_NAME} ` +
+    `busca en todo momento cumplir con la normativa de la SUDEASEG y que, al estar ya aprobado, falta poco ` +
+    `para que reciba su pago; si todavía no está aprobado, explícale en qué etapa va sin prometer una fecha ` +
+    `exacta. Si tiene documentos pendientes, indícale claramente cuáles son y que puede enviarlos por este ` +
+    `mismo chat (foto o PDF).`
+  );
+}
+
+/**
+ * Gestiona el flujo conversacional de APERTURA de un siniestro (PASOS 1-5 del pedido
+ * original): primeros auxilios emocionales, identificación del cliente (reutiliza
+ * identificarOCrearCliente — se salta si ya está identificado), tipo, fecha,
+ * descripción y ubicación, y finalmente abre el siniestro real (siniestrosService) y
+ * confirma con el número generado. Un paso guionado y determinista, igual criterio
+ * que handleClientIdentificationGate — nunca depende de que el modelo decida cuándo
+ * preguntar o qué extraer. Muta `record.siniestroFlow`. Devuelve `{ handled: false }`
+ * si el mensaje no dispara ni continúa ningún flujo en curso.
+ */
+async function handleSiniestroFlowGate(record, userText, seed) {
+  const text = userText || "";
+
+  if (!record.siniestroFlow) {
+    if (!detectSiniestroTrigger(text)) return { handled: false };
+    record.siniestroFlow = { step: "heridos", draft: {} };
+    return {
+      handled: true,
+      replyText:
+        "Lamento mucho lo ocurrido 💛. Lo más importante es que estés bien. ¿Hay heridos? Si es una " +
+        "emergencia, comunícate primero con el 911 o tu línea de emergencia — yo te ayudo con el reporte " +
+        "del siniestro mientras tanto.",
+    };
+  }
+
+  const flow = record.siniestroFlow;
+
+  if (flow.step === "heridos") {
+    flow.draft.heridos = text.trim().slice(0, 300);
+    if (!record.clienteId) {
+      flow.step = "identificacion";
+      flow.attempts = 0;
+      return {
+        handled: true,
+        replyText:
+          'Entendido, gracias por contarme. Para abrir tu siniestro necesito ubicarte primero — ¿me ' +
+          'compartes tu cédula (ej. "V-12345678") o el número de tu póliza?',
+      };
+    }
+    flow.step = "tipo";
+    return { handled: true, replyText: SINIESTRO_TIPO_QUESTION };
+  }
+
+  if (flow.step === "identificacion") {
+    if (wantsToSkipIdentification(text)) {
+      record.siniestroFlow = null;
+      return {
+        handled: true,
+        replyText:
+          `Sin ese dato no puedo abrir el siniestro por aquí — lo mejor es que te comuniques con un asesor ` +
+          `al ${CLAIMS_PHONE} para que te ayude directamente. ¿Te ayudo con algo más mientras tanto?`,
+      };
+    }
+    const found = extractIdentification(text);
+    if (!found) {
+      flow.attempts = (flow.attempts || 0) + 1;
+      if (flow.attempts >= 2) {
+        record.siniestroFlow = null;
+        return {
+          handled: true,
+          replyText: `No logré ubicar tu póliza. Comunícate con un asesor al ${CLAIMS_PHONE} y te ayudan a abrir el siniestro directamente. ¿Te ayudo con algo más?`,
+        };
+      }
+      return {
+        handled: true,
+        replyText:
+          'No reconocí ese formato. Tu cédula sería algo como "V-12345678", o tu número de póliza como "AUTO-2024-001".',
+      };
+    }
+    const cliente = await identificarOCrearCliente(found, seed);
+    if (!cliente) {
+      flow.attempts = (flow.attempts || 0) + 1;
+      if (flow.attempts >= 2) {
+        record.siniestroFlow = null;
+        return {
+          handled: true,
+          replyText: `No encontré esa póliza en nuestros registros. Comunícate con un asesor al ${CLAIMS_PHONE} para que te ayude a abrir el siniestro. ¿Te ayudo con algo más?`,
+        };
+      }
+      return {
+        handled: true,
+        replyText: `No encontré la póliza ${found.value} en nuestros registros. ¿Me confirmas tu cédula (ej. "V-12345678")?`,
+      };
+    }
+    record.clienteId = cliente.cedula;
+    record.identificationState = "done"; // ya no hace falta que el gate genérico la vuelva a pedir
+    if (seed && seed.canalPreferido && !cliente.canalPreferido) touchCliente(cliente.cedula, { canalPreferido: seed.canalPreferido });
+    if (found.type === "poliza") flow.draft.poliza = found.value;
+    flow.step = "tipo";
+    return { handled: true, replyText: SINIESTRO_TIPO_QUESTION };
+  }
+
+  if (flow.step === "tipo") {
+    const tipo = detectSiniestroTipo(text);
+    if (!tipo) {
+      return { handled: true, replyText: `No reconocí el tipo. ${SINIESTRO_TIPO_QUESTION}` };
+    }
+    flow.draft.tipo = tipo;
+    flow.step = "fecha";
+    return { handled: true, replyText: "¿Qué día (y hora aproximada, si la recuerdas) ocurrió?" };
+  }
+
+  if (flow.step === "fecha") {
+    flow.draft.fechaOcurrencia = text.trim().slice(0, 100);
+    flow.step = "descripcion";
+    return { handled: true, replyText: "Cuéntame brevemente qué ocurrió." };
+  }
+
+  if (flow.step === "descripcion") {
+    flow.draft.descripcion = text.trim().slice(0, 600);
+    flow.step = "ubicacion";
+    return {
+      handled: true,
+      replyText: "¿En qué lugar ocurrió? Puedes escribir la dirección, o compartir tu ubicación con el botón de abajo 📍.",
+      requestLocation: true,
+    };
+  }
+
+  if (flow.step === "ubicacion") {
+    if (!wantsToSkipIdentification(text)) {
+      // wantsToSkipIdentification() detecta frases genéricas de "omitir/no aplica" —
+      // se reutiliza aquí para permitir saltar la ubicación sin duplicar esa lista.
+      flow.draft.ubicacion = text.trim().slice(0, 300);
+    }
+    return finalizeSiniestroFlow(record, flow);
+  }
+
+  return { handled: false };
+}
+
+/** Último paso de handleSiniestroFlowGate: abre el siniestro (siniestrosService) con
+ *  los datos recopilados y confirma con el número generado, el ajustador asignado y
+ *  la lista de documentos pendientes según el tipo. Siempre limpia
+ *  `record.siniestroFlow` al terminar (con éxito o con error). */
+// A qué ramo(s) de póliza corresponde cada tipo de siniestro — usado solo para elegir,
+// entre las pólizas REALES del cliente (polizasService), cuál asociar al abrir uno
+// nuevo cuando no dijo un número de póliza explícito (ver resolverPolizaParaSiniestro).
+const SINIESTRO_TIPO_A_RAMO = {
+  accidente: ["automoviles", "autos"],
+  colision: ["automoviles", "autos"],
+  robo: ["automoviles", "autos", "patrimonial", "patrimoniales"],
+  incendio: ["patrimonial", "patrimoniales"],
+  hospitalizacion: ["hcm"],
+};
+
+/** Determina qué póliza asociar a un siniestro que se está abriendo: el número que el
+ *  cliente haya dado explícitamente (identificación por póliza) tiene prioridad; si
+ *  no, se buscan las pólizas REALES del cliente (polizasService — más confiables que
+ *  el arreglo `polizas` autoreportado del perfil) y se prefiere una del ramo que
+ *  corresponde al tipo de siniestro; si no hay ninguna coincidencia, la primera que
+ *  tenga; como último recurso, lo autoreportado en el perfil. `""` si no hay ningún dato. */
+async function resolverPolizaParaSiniestro(cliente, draft) {
+  if (draft.poliza) return draft.poliza;
+  if (!cliente) return "";
+  const polizasReales = await polizasService.buscarPorCedula(cliente.cedula);
+  if (polizasReales.length) {
+    const ramosPreferidos = SINIESTRO_TIPO_A_RAMO[draft.tipo] || [];
+    const match = polizasReales.find((p) => ramosPreferidos.includes(p.ramo));
+    return (match || polizasReales[0]).numero;
+  }
+  return (Array.isArray(cliente.polizas) && cliente.polizas[0]) || "";
+}
+
+async function finalizeSiniestroFlow(record, flow) {
+  const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
+  const draft = flow.draft;
+
+  let siniestro;
+  try {
+    siniestro = await siniestrosService.abrirSiniestro({
+      poliza: await resolverPolizaParaSiniestro(cliente, draft),
+      cedula_titular: cliente ? cliente.cedula : "",
+      tipo: draft.tipo,
+      fecha_ocurrencia: draft.fechaOcurrencia,
+      descripcion: draft.descripcion,
+      ubicacion: draft.ubicacion || "",
+      heridos: draft.heridos || "",
+    });
+  } catch (err) {
+    console.error("Error al abrir el siniestro:", err.message);
+    record.siniestroFlow = null;
+    return {
+      handled: true,
+      replyText: `No pude registrar el siniestro automáticamente — comunícate con un asesor al ${CLAIMS_PHONE} para que te ayude directamente. ¿Te ayudo con algo más?`,
+    };
+  }
+
+  record.siniestroFlow = null;
+  if (record.clienteId) {
+    recordClientTopic(record.clienteId, "siniestro"); // reutiliza el flag casoAbiertoSiniestro ya existente
+  }
+
+  // Notifica en tiempo real al corredor dueño de la póliza (si tiene cuenta en el
+  // portal /corredor y está conectado) — ver "Toast notification cuando un cliente de
+  // su cartera abre un siniestro" del pedido original.
+  try {
+    const polizaDelSiniestro = siniestro.poliza ? await polizasService.buscarPorNumero(siniestro.poliza) : null;
+    if (polizaDelSiniestro && polizaDelSiniestro.corredor) {
+      notifyCorredorDePoliza(polizaDelSiniestro.corredor, "siniestro-abierto", {
+        numero: siniestro.numero,
+        // `cliente.nombre` puede venir vacío (se identificó solo por cédula en el
+        // propio flujo de siniestro, que no pregunta el nombre) — en ese caso se usa
+        // el titular real de la póliza en su lugar, nunca una cadena vacía.
+        titular: (cliente && cliente.nombre) || polizaDelSiniestro.titular,
+        poliza: siniestro.poliza,
+        tipo: siniestro.tipo,
+      });
+    }
+  } catch (err) {
+    console.warn("[aviso] No se pudo notificar al corredor sobre el nuevo siniestro:", err.message);
+  }
+
+  const docsTexto = siniestro.documentos_pendientes.length
+    ? `📎 Documentos que necesito que me envíes (puedes adjuntarlos aquí mismo en el chat): ${labelDocumentos(
+        siniestro.documentos_pendientes
+      )}.`
+    : "No necesitas enviarme documentos adicionales por ahora.";
+
+  return {
+    handled: true,
+    replyText:
+      `✅ Listo, tu siniestro quedó registrado con el número ${siniestro.numero}.\n\n` +
+      `El ajustador ${siniestro.ajustador_asignado} ya fue asignado a tu caso, con fecha estimada de ` +
+      `resolución ${siniestro.fecha_estimada_resolucion}.\n\n${docsTexto}\n\n` +
+      `Puedes preguntarme "¿cómo va mi siniestro?" o "¿qué documentos me faltan?" cuando quieras.`,
   };
 }
 
@@ -2100,6 +2621,135 @@ function csvEscape(value) {
 }
 
 // ---------------------------------------------------------------------------
+// Autenticación del portal de corredores (/corredor) — JWT (jsonwebtoken), a
+// diferencia de la cookie de sesión del panel /admin. El token viaja en el header
+// `Authorization: Bearer <token>` en peticiones normales (el cliente lo guarda en
+// localStorage, ver public/corredor.js) y como query string `?token=` SOLO para el
+// stream SSE de notificaciones (EventSource no permite headers personalizados — es
+// la única excepción; ver GET /api/corredor/events).
+// ---------------------------------------------------------------------------
+
+function issueCorredorToken(corredor) {
+  return jwt.sign({ sub: corredor.id, email: corredor.email, nombre: corredor.nombre }, JWT_SECRET, {
+    expiresIn: CORREDOR_TOKEN_TTL_S,
+  });
+}
+
+/** Extrae y valida el JWT de una petición (header Authorization, o `?token=` para el
+ *  stream SSE) y adjunta el perfil público del corredor en `req.corredor`. Responde
+ *  401 si falta, es inválido, expiró, o la cuenta ya no existe/está desactivada. */
+function requireCorredorAuth(req, res, next) {
+  if (!JWT_SECRET) {
+    return res.status(500).json({ error: "El portal de corredores no está configurado (falta JWT_SECRET en el servidor)." });
+  }
+  const authHeader = req.headers.authorization || "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+  const token = bearerToken || (typeof req.query.token === "string" ? req.query.token : "");
+  if (!token) {
+    return res.status(401).json({ error: "No autenticado." });
+  }
+  let payload;
+  try {
+    payload = jwt.verify(token, JWT_SECRET);
+  } catch (_err) {
+    return res.status(401).json({ error: "Sesión inválida o expirada. Inicia sesión de nuevo." });
+  }
+  const corredor = corredoresService.buscarPorId(payload.sub);
+  if (!corredor || !corredor.activo) {
+    return res.status(401).json({ error: "Cuenta no encontrada o desactivada." });
+  }
+  req.corredor = corredoresService.toPublicCorredor(corredor);
+  next();
+}
+
+// ---------------------------------------------------------------------------
+// Notificaciones en tiempo real del portal de corredores — un stream SSE por sesión
+// conectada (mismo mecanismo que /api/chat, ver sendSse), pero de larga duración: se
+// mantiene abierto mientras el corredor tiene el portal abierto en el navegador. Un
+// mismo corredor puede tener varias pestañas/conexiones a la vez (Set de respuestas).
+// ---------------------------------------------------------------------------
+
+/** @type {Map<string, Set<import('express').Response>>} corredorId -> conexiones SSE abiertas */
+const corredorEventStreams = new Map();
+
+function registerCorredorEventStream(corredorId, res) {
+  if (!corredorEventStreams.has(corredorId)) corredorEventStreams.set(corredorId, new Set());
+  corredorEventStreams.get(corredorId).add(res);
+}
+
+function unregisterCorredorEventStream(corredorId, res) {
+  const set = corredorEventStreams.get(corredorId);
+  if (!set) return;
+  set.delete(res);
+  if (set.size === 0) corredorEventStreams.delete(corredorId);
+}
+
+/** Envía un evento en tiempo real a TODAS las conexiones abiertas de un corredor (no
+ *  hace nada si no tiene ninguna — el corredor simplemente no ve el toast hasta que
+ *  vuelva a abrir el portal, no se pierde el dato de fondo porque siempre vive
+ *  igual en /api/corredor/* — esto es solo la notificación push). */
+function notifyCorredor(corredorId, event, data) {
+  const set = corredorEventStreams.get(corredorId);
+  if (!set || set.size === 0) return;
+  for (const res of set) {
+    try {
+      sendSse(res, event, data);
+    } catch (_err) {
+      // conexión ya cerrada del otro lado — se limpiará en el evento "close" del stream
+    }
+  }
+}
+
+/** Ubica la cuenta de corredor dueña de una póliza (por su campo `corredor`, un
+ *  nombre) y le notifica en tiempo real — usado cuando un cliente de su cartera abre
+ *  un siniestro (ver finalizeSiniestroFlow) o cuando una póliza cruza el umbral de 7
+ *  días para vencer (ver iniciarChequeoVencimientosCorredores). No lanza si no
+ *  encuentra corredor — no toda póliza tiene por qué tener uno registrado en el portal. */
+function notifyCorredorDePoliza(nombreCorredorPoliza, event, data) {
+  if (!nombreCorredorPoliza) return;
+  const corredor = corredoresService.buscarPorNombre(nombreCorredorPoliza);
+  if (corredor) notifyCorredor(corredor.id, event, data);
+}
+
+/**
+ * Revisa periódicamente las pólizas de cada corredor activo por si alguna cruzó el
+ * umbral de "vence en 7 días" desde la última revisión, y le manda un toast en tiempo
+ * real (ver notifyCorredor) — sin scheduler/cron real, un `setInterval` en memoria
+ * (se reinicia si el servidor se reinicia, junto con el registro de ya notificadas,
+ * así que tras un reinicio puede volver a avisar una vez de las que sigan en rango;
+ * aceptable para una alerta informativa, no crítica).
+ */
+const polizasYaAlertadas = new Set(); // `${corredorId}:${numeroPoliza}` ya notificadas en esta corrida
+async function chequearVencimientosCorredores() {
+  for (const corredor of corredoresService.listarTodosCorredores()) {
+    if (!corredorEventStreams.has(corredor.id)) continue; // nadie conectado, no vale la pena consultar
+    try {
+      const porVencer = await corredoresService.polizasPorVencer(corredor.nombre, CORREDOR_ALERTA_VENCIMIENTO_DIAS);
+      for (const p of porVencer) {
+        if (p.vigencia.vencida) continue; // esta alerta es solo "por vencer", no "ya vencida"
+        const key = `${corredor.id}:${p.numero}`;
+        if (polizasYaAlertadas.has(key)) continue;
+        polizasYaAlertadas.add(key);
+        notifyCorredor(corredor.id, "poliza-por-vencer", {
+          numero: p.numero,
+          titular: p.titular,
+          diasRestantes: p.vigencia.diasRestantes,
+          vigenciaFin: p.vigencia_fin,
+        });
+      }
+    } catch (err) {
+      console.warn("[aviso] Error revisando vencimientos para", corredor.nombre, ":", err.message);
+    }
+  }
+}
+
+function iniciarChequeoVencimientosCorredores() {
+  setInterval(() => {
+    chequearVencimientosCorredores().catch((err) => console.warn("[aviso] chequearVencimientosCorredores falló:", err.message));
+  }, CORREDOR_CHEQUEO_VENCIMIENTOS_MS).unref();
+}
+
+// ---------------------------------------------------------------------------
 // App Express
 // ---------------------------------------------------------------------------
 
@@ -2584,10 +3234,26 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
 
   sendSse(res, "meta", { sessionId });
 
+  // --- Apertura/seguimiento de un siniestro (ver handleSiniestroFlowGate) ---
+  // Tiene prioridad sobre la identificación genérica de abajo — incluso como primer
+  // mensaje de la conversación — porque el pedido original exige una respuesta empática
+  // inmediata ante un accidente/robo/etc., antes de pedir cualquier otro dato.
+  const siniestroGate = await handleSiniestroFlowGate(record, lastUserEffectiveText, { canalPreferido: "web" });
+  if (siniestroGate.handled) {
+    touchConversationRecord(record);
+    if (!clientClosed) {
+      sendSse(res, "delta", { text: siniestroGate.replyText });
+      if (siniestroGate.requestLocation) sendSse(res, "location_request", {});
+      sendSse(res, "done", {});
+      res.end();
+    }
+    return;
+  }
+
   // --- Identificación del cliente (memoria persistente por cédula/póliza) ---
   // Un paso guionado, determinista, ANTES de involucrar a Claude — mismo criterio que
   // el resto de flujos guionados del proyecto (menú de WhatsApp, bienvenida).
-  const idGate = handleClientIdentificationGate(record, lastUserEffectiveText, { canalPreferido: "web" });
+  const idGate = await handleClientIdentificationGate(record, lastUserEffectiveText, { canalPreferido: "web" });
   if (idGate.handled) {
     touchConversationRecord(record);
     if (!clientClosed) {
@@ -2599,7 +3265,47 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   }
 
   const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
-  const clientContextAddendum = buildClientContextAddendum(cliente);
+  // Datos reales de pólizas (services/polizas.service.js) para que Lucy responda
+  // vencimientos/coberturas/prima/suma asegurada/corredor sin inventar nada.
+  const clientPolizas = cliente ? await polizasService.buscarPorCedula(cliente.cedula) : [];
+  // Datos reales de siniestros (services/siniestros.service.js) — igual criterio: nunca
+  // inventar estados, montos ni fechas de un siniestro (ver buildSiniestrosContextAddendum).
+  const clientSiniestros = cliente ? await siniestrosService.listarPorCedula(cliente.cedula) : [];
+
+  // PASO 4 del flujo de siniestros: si el usuario acaba de adjuntar una foto/PDF y
+  // tiene un siniestro con documentos pendientes, se marca el primero de la lista como
+  // recibido automáticamente (no hay clasificación real del documento — es una
+  // heurística determinista: "el próximo documento pendiente de la lista", ver nota en
+  // el README) y se le avisa a Claude para que lo confirme de forma natural.
+  let siniestroDocNote = "";
+  const lastUserHadDocument = Boolean(
+    lastMsg && lastMsg.role === "user" && lastMsg.attachment && (lastMsg.attachment.kind === "image" || lastMsg.attachment.kind === "pdf")
+  );
+  if (lastUserHadDocument && cliente) {
+    const abierto = clientSiniestros.find((s) => Array.isArray(s.documentos_pendientes) && s.documentos_pendientes.length > 0);
+    if (abierto) {
+      try {
+        const actualizado = await siniestrosService.actualizarDocumentos(abierto.numero, {
+          documentoRecibido: abierto.documentos_pendientes[0],
+        });
+        if (actualizado) {
+          siniestroDocNote =
+            `\n\n## Documento recién recibido\nEl usuario acaba de enviar un documento adjunto en este mismo ` +
+            `mensaje para su siniestro ${abierto.numero} — ya se registró como recibido ` +
+            `"${SINIESTRO_DOC_LABELS[abierto.documentos_pendientes[0]] || abierto.documentos_pendientes[0]}". ` +
+            (actualizado.documentos_pendientes.length
+              ? `Aún faltan: ${labelDocumentos(actualizado.documentos_pendientes)}. `
+              : "Ya no falta ningún documento por ese siniestro. ") +
+            "Agradécele el envío de forma natural, sin pedirle que lo reenvíe.";
+        }
+      } catch (err) {
+        console.warn("[aviso] No se pudo registrar el documento recibido para el siniestro:", err.message);
+      }
+    }
+  }
+
+  const clientContextAddendum =
+    buildClientContextAddendum(cliente, clientPolizas) + buildSiniestrosContextAddendum(clientSiniestros) + siniestroDocNote;
   isAudioReply = isAudioReply || Boolean(TTS_AVAILABLE && cliente && cliente.preferenciaAudio);
 
   try {
@@ -2927,9 +3633,19 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
 
+  // Ubicación compartida nativamente por WhatsApp (Twilio la entrega como Latitude/
+  // Longitude en el propio webhook, sin adjunto) — se usa como texto del mensaje si no
+  // vino nada más, para que el flujo de siniestros (paso "ubicación") la reciba igual
+  // que si el usuario la hubiera escrito. Ver también CONFIG del botón 📍 en el widget
+  // web (chatbot.js), que logra lo mismo enviando un enlace de Google Maps como texto.
+  const latitude = typeof body.Latitude === "string" ? body.Latitude : "";
+  const longitude = typeof body.Longitude === "string" ? body.Longitude : "";
+  const locationText = latitude && longitude ? `📍 Ubicación compartida: https://www.google.com/maps?q=${latitude},${longitude}` : "";
+
   const isVoiceNote = Boolean(attachmentEntry && attachmentEntry.kind === "audio" && attachmentEntry.transcript);
   const userText =
     rawText ||
+    locationText ||
     (isVoiceNote ? attachmentEntry.transcript : attachmentEntry ? defaultCaptionForAttachment(attachmentEntry) : "");
   if (!userText) {
     // P. ej. un sticker no compatible, sin texto — no hay nada que procesar.
@@ -2990,10 +3706,22 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
 
+  // Apertura/seguimiento de un siniestro (ver handleSiniestroFlowGate) — igual criterio
+  // que en /api/chat: tiene prioridad sobre la identificación genérica de abajo, incluso
+  // como primer mensaje, por la urgencia emocional de un reporte de accidente/robo/etc.
+  const siniestroGate = await handleSiniestroFlowGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
+  if (siniestroGate.handled) {
+    await sendWhatsappMessage(from, siniestroGate.replyText);
+    record.messages.push({ role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() });
+    conversationsCache[phoneKey] = record;
+    touchConversationRecord(record);
+    return;
+  }
+
   // Identificación del cliente (memoria persistente por cédula/póliza) — un paso
   // guionado, determinista, ANTES de involucrar a Claude. El teléfono ya lo tenemos
   // gratis (viene del propio WhatsApp), así que se precarga en el perfil nuevo.
-  const idGate = handleClientIdentificationGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
+  const idGate = await handleClientIdentificationGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
   if (idGate.handled) {
     await sendWhatsappMessage(from, idGate.replyText);
     record.messages.push({ role: "assistant", content: idGate.replyText, time: new Date().toISOString() });
@@ -3002,6 +3730,37 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
   const clienteWhatsapp = record.clienteId ? getClienteByCedula(record.clienteId) : null;
+  const clienteWhatsappPolizas = clienteWhatsapp ? await polizasService.buscarPorCedula(clienteWhatsapp.cedula) : [];
+  const clienteWhatsappSiniestros = clienteWhatsapp ? await siniestrosService.listarPorCedula(clienteWhatsapp.cedula) : [];
+
+  // PASO 4 del flujo de siniestros, canal WhatsApp: mismo criterio que /api/chat (ver
+  // ahí el comentario completo sobre la heurística "primer documento pendiente").
+  let siniestroDocNoteWhatsapp = "";
+  const lastUserHadDocumentWhatsapp = Boolean(attachmentEntry && (attachmentEntry.kind === "image" || attachmentEntry.kind === "pdf"));
+  if (lastUserHadDocumentWhatsapp && clienteWhatsapp) {
+    const abiertoWhatsapp = clienteWhatsappSiniestros.find(
+      (s) => Array.isArray(s.documentos_pendientes) && s.documentos_pendientes.length > 0
+    );
+    if (abiertoWhatsapp) {
+      try {
+        const actualizadoWhatsapp = await siniestrosService.actualizarDocumentos(abiertoWhatsapp.numero, {
+          documentoRecibido: abiertoWhatsapp.documentos_pendientes[0],
+        });
+        if (actualizadoWhatsapp) {
+          siniestroDocNoteWhatsapp =
+            `\n\n## Documento recién recibido\nEl usuario acaba de enviar un documento adjunto en este mismo ` +
+            `mensaje para su siniestro ${abiertoWhatsapp.numero} — ya se registró como recibido ` +
+            `"${SINIESTRO_DOC_LABELS[abiertoWhatsapp.documentos_pendientes[0]] || abiertoWhatsapp.documentos_pendientes[0]}". ` +
+            (actualizadoWhatsapp.documentos_pendientes.length
+              ? `Aún faltan: ${labelDocumentos(actualizadoWhatsapp.documentos_pendientes)}. `
+              : "Ya no falta ningún documento por ese siniestro. ") +
+            "Agradécele el envío de forma natural, sin pedirle que lo reenvíe.";
+        }
+      } catch (err) {
+        console.warn("[aviso] No se pudo registrar el documento recibido para el siniestro (WhatsApp):", err.message);
+      }
+    }
+  }
 
   // Selección numérica del menú (1-4) -> se traduce a una frase natural para Claude,
   // pero el registro conserva lo que el usuario escribió literalmente ("1").
@@ -3025,7 +3784,12 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1500,
-      system: SYSTEM_PROMPT + WHATSAPP_SYSTEM_ADDENDUM + buildClientContextAddendum(clienteWhatsapp),
+      system:
+        SYSTEM_PROMPT +
+        WHATSAPP_SYSTEM_ADDENDUM +
+        buildClientContextAddendum(clienteWhatsapp, clienteWhatsappPolizas) +
+        buildSiniestrosContextAddendum(clienteWhatsappSiniestros) +
+        siniestroDocNoteWhatsapp,
       output_config: { effort: "medium" },
       messages: anthropicMessages,
     });
@@ -3291,8 +4055,10 @@ app.get("/api/admin/clientes", requireAdmin, (_req, res) => {
  * Perfil completo de un cliente + las conversaciones (de cualquier canal) vinculadas
  * a su cédula — así el panel puede mostrar "el historial completo de conversaciones
  * por cliente" reutilizando el mismo modal de detalle que ya existe para /conversations.
+ * También trae sus pólizas REALES (services/polizas.service.js), de solo lectura
+ * aquí — la fuente de verdad es el JSON/API de pólizas, no el perfil del cliente.
  */
-app.get("/api/admin/clientes/:cedula", requireAdmin, (req, res) => {
+app.get("/api/admin/clientes/:cedula", requireAdmin, async (req, res) => {
   const cliente = getClienteByCedula(req.params.cedula);
   if (!cliente) {
     return res.status(404).json({ error: "Cliente no encontrado." });
@@ -3301,7 +4067,16 @@ app.get("/api/admin/clientes/:cedula", requireAdmin, (req, res) => {
     .filter((record) => record.clienteId === cliente.cedula)
     .map(toConversationSummary)
     .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-  res.json({ cliente, conversaciones });
+
+  let polizas = [];
+  try {
+    polizas = await polizasService.buscarPorCedula(cliente.cedula);
+  } catch (err) {
+    console.warn("[aviso] No se pudieron consultar las pólizas del cliente para /admin:", err.message);
+  }
+  const polizasConVigencia = polizas.map((p) => ({ ...p, vigencia: polizasService.verificarVigencia(p) }));
+
+  res.json({ cliente, conversaciones, polizas: polizasConVigencia });
 });
 
 /**
@@ -3336,6 +4111,87 @@ app.patch("/api/admin/clientes/:cedula", requireAdmin, (req, res) => {
 
   const updated = touchCliente(cliente.cedula, patch);
   res.json({ ok: true, cliente: updated });
+});
+
+// ---------------------------------------------------------------------------
+// Rutas — Panel de administración: Siniestros (services/siniestros.service.js)
+// ---------------------------------------------------------------------------
+
+/** Enriquece un siniestro con el nombre del cliente (si está en la memoria persistente)
+ *  y la etiqueta legible del estado — para no repetir este mapeo en cada ruta. */
+function toSiniestroSummary(s) {
+  const cliente = s.cedula_titular ? getClienteByCedula(s.cedula_titular) : null;
+  return {
+    ...s,
+    clienteNombre: cliente ? cliente.nombre : "",
+    estadoLabel: SINIESTRO_ESTADO_LABELS[s.estado] || s.estado,
+    tipoLabel: SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo,
+  };
+}
+
+/**
+ * GET /api/admin/siniestros
+ * Lista todos los siniestros (ver services/siniestros.service.js#listarTodos), con
+ * filtros opcionales por query string: `estado` (uno de SINIESTRO_ESTADO_LABELS) y
+ * `mayor=1` (solo siniestros mayores — ver UMBRAL_SINIESTRO_MAYOR).
+ */
+app.get("/api/admin/siniestros", requireAdmin, async (req, res) => {
+  let siniestros = await siniestrosService.listarTodos();
+  if (req.query.estado && typeof req.query.estado === "string") {
+    siniestros = siniestros.filter((s) => s.estado === req.query.estado);
+  }
+  if (req.query.mayor === "1") {
+    siniestros = siniestros.filter((s) => s.siniestro_mayor);
+  }
+  res.json({ siniestros: siniestros.map(toSiniestroSummary) });
+});
+
+/**
+ * GET /api/admin/siniestros/:numero
+ * Detalle completo de un siniestro puntual, enriquecido con el nombre del cliente.
+ */
+app.get("/api/admin/siniestros/:numero", requireAdmin, async (req, res) => {
+  const siniestro = await siniestrosService.buscarPorNumero(req.params.numero);
+  if (!siniestro) {
+    return res.status(404).json({ error: "Siniestro no encontrado." });
+  }
+  res.json({ siniestro: toSiniestroSummary(siniestro) });
+});
+
+/**
+ * PATCH /api/admin/siniestros/:numero
+ * Edita los campos administrables de un siniestro: estado, ajustador asignado, monto
+ * aprobado, documentos recibidos/pendientes, fecha estimada de resolución, y permite
+ * agregar un comentario nuevo (`nuevoComentario`) — ver
+ * siniestrosService.actualizarSiniestro().
+ */
+app.patch("/api/admin/siniestros/:numero", requireAdmin, async (req, res) => {
+  const existente = await siniestrosService.buscarPorNumero(req.params.numero);
+  if (!existente) {
+    return res.status(404).json({ error: "Siniestro no encontrado." });
+  }
+
+  const body = req.body || {};
+  const patch = {};
+  if (typeof body.estado === "string" && SINIESTRO_ESTADO_LABELS[body.estado]) patch.estado = body.estado;
+  if (typeof body.ajustador_asignado === "string") patch.ajustador_asignado = body.ajustador_asignado.trim().slice(0, 100);
+  if (body.monto_aprobado === null || typeof body.monto_aprobado === "number") patch.monto_aprobado = body.monto_aprobado;
+  if (typeof body.fecha_estimada_resolucion === "string") patch.fecha_estimada_resolucion = body.fecha_estimada_resolucion.slice(0, 20);
+  if (Array.isArray(body.documentos_recibidos)) {
+    patch.documentos_recibidos = body.documentos_recibidos.filter((d) => typeof d === "string").slice(0, 30);
+  }
+  if (Array.isArray(body.documentos_pendientes)) {
+    patch.documentos_pendientes = body.documentos_pendientes.filter((d) => typeof d === "string").slice(0, 30);
+  }
+  if (typeof body.nuevoComentario === "string" && body.nuevoComentario.trim()) {
+    patch.nuevoComentario = body.nuevoComentario;
+  }
+
+  const updated = await siniestrosService.actualizarSiniestro(req.params.numero, patch);
+  if (!updated) {
+    return res.status(500).json({ error: "No se pudo actualizar el siniestro." });
+  }
+  res.json({ ok: true, siniestro: toSiniestroSummary(updated) });
 });
 
 /**
@@ -3423,6 +4279,341 @@ app.get("/api/admin/conversations-export.csv", requireAdmin, (_req, res) => {
   res.send("﻿" + csv); // BOM para que Excel detecte UTF-8 correctamente
 });
 
+// ---------------------------------------------------------------------------
+// Rutas — Portal de corredores (/corredor)
+// ---------------------------------------------------------------------------
+//
+// Las 4 rutas de página (GET /corredor y sub-rutas) sirven siempre el mismo HTML —
+// el ruteo entre vistas (dashboard/clientes/cotizar/siniestros) ocurre en el propio
+// navegador (History API, ver public/corredor.js), igual que /admin sirve un único
+// admin.html para todas sus pestañas. La protección REAL de los datos está en los
+// endpoints /api/corredor/* (requireCorredorAuth), no en estas rutas de página: servir
+// el HTML no expone ningún dato, solo el cascarón de la aplicación.
+const CORREDOR_PAGE_ROUTES = ["/corredor", "/corredor/clientes", "/corredor/cotizar", "/corredor/siniestros"];
+CORREDOR_PAGE_ROUTES.forEach((route) => {
+  app.get(route, (_req, res) => {
+    res.sendFile(path.join(__dirname, "public", "corredor.html"));
+  });
+});
+
+app.post("/api/corredor/login", loginLimiter, async (req, res) => {
+  if (!JWT_SECRET) {
+    return res.status(500).json({ error: "El portal de corredores no está configurado (falta JWT_SECRET en el servidor)." });
+  }
+  const { email, password } = req.body || {};
+  if (typeof email !== "string" || typeof password !== "string") {
+    return res.status(400).json({ error: "Correo y contraseña son requeridos." });
+  }
+  const corredor = await corredoresService.autenticar(email, password);
+  if (!corredor) {
+    return res.status(401).json({ error: "Correo o contraseña incorrectos." });
+  }
+  const token = issueCorredorToken(corredor);
+  res.json({ ok: true, token, corredor });
+});
+
+app.get("/api/corredor/me", requireCorredorAuth, (req, res) => {
+  res.json({ corredor: req.corredor });
+});
+
+/**
+ * GET /api/corredor/events
+ * Stream SSE de notificaciones en tiempo real (toasts): "siniestro-abierto" (un
+ * cliente de la cartera abrió un siniestro), "poliza-por-vencer" (una póliza de la
+ * cartera cruzó el umbral de 7 días) y "emision-resuelta" (gerencia aprobó/rechazó una
+ * solicitud de emisión). El token viaja en `?token=` (única excepción a
+ * Authorization: Bearer — EventSource del navegador no permite headers personalizados).
+ */
+app.get("/api/corredor/events", requireCorredorAuth, (req, res) => {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  registerCorredorEventStream(req.corredor.id, res);
+  sendSse(res, "connected", { ok: true });
+
+  // Mantiene la conexión viva a través de proxies que cierran streams inactivos.
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(": keep-alive\n\n");
+    } catch (_err) {
+      clearInterval(keepAlive);
+    }
+  }, 25000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unregisterCorredorEventStream(req.corredor.id, res);
+  });
+});
+
+/** GET /api/corredor/cartera?q=texto — cartera de clientes del corredor (ver
+ *  corredoresService.listarCartera), con filtro opcional de búsqueda en el servidor. */
+app.get("/api/corredor/cartera", requireCorredorAuth, async (req, res) => {
+  const cartera = await corredoresService.listarCartera(req.corredor.nombre);
+  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+  const filtrada = q
+    ? cartera.filter((c) => c.nombre.toLowerCase().includes(q) || c.cedula.toLowerCase().includes(q))
+    : cartera;
+  res.json({ cartera: filtrada });
+});
+
+/** GET /api/corredor/polizas-por-vencer?dias=30 — "Muéstrame mis pólizas por vencer
+ *  este mes" (dias=30 por defecto) — ver corredoresService.polizasPorVencer. */
+app.get("/api/corredor/polizas-por-vencer", requireCorredorAuth, async (req, res) => {
+  const dias = req.query.dias !== undefined ? Number(req.query.dias) : undefined;
+  const polizas = await corredoresService.polizasPorVencer(req.corredor.nombre, dias);
+  res.json({ polizas });
+});
+
+/** GET /api/corredor/siniestros — "¿Qué clientes tienen siniestros abiertos?" —
+ *  todos los siniestros de la cartera, cada uno marcado con `abierto`. */
+app.get("/api/corredor/siniestros", requireCorredorAuth, async (req, res) => {
+  const siniestros = await corredoresService.siniestrosDeCartera(req.corredor.nombre);
+  res.json({ siniestros });
+});
+
+/** GET /api/corredor/comision?desde=AAAA-MM&hasta=AAAA-MM — "¿Cuál es mi comisión
+ *  acumulada?" — desglose mensual (ver corredoresService.calcularComision). */
+app.get("/api/corredor/comision", requireCorredorAuth, async (req, res) => {
+  const desde = typeof req.query.desde === "string" ? req.query.desde : undefined;
+  const hasta = typeof req.query.hasta === "string" ? req.query.hasta : undefined;
+  const comision = await corredoresService.calcularComision(req.corredor, { desde, hasta });
+  res.json(comision);
+});
+
+/**
+ * POST /api/corredor/cotizar
+ * Cotizador profesional: calcula (en el SERVIDOR, con las mismas tarifas del
+ * quoter-config.json vigente — nunca confía en un monto que mande el cliente) y
+ * devuelve directamente el PDF formal de la cotización, con membrete de la compañía.
+ * Body: { ramo: "automoviles"|"hcm", cliente: { nombre, cedula, vehiculo? }, inputs }
+ * (mismo shape de `inputs` que usa el cotizador del chat — ver computeRcv/computeHcm
+ * en public/chatbot.js — más los datos del cliente para membretear el PDF).
+ */
+app.post("/api/corredor/cotizar", quoteLimiter, requireCorredorAuth, async (req, res) => {
+  const { ramo, cliente, inputs } = req.body || {};
+  if ((ramo !== "automoviles" && ramo !== "hcm") || !cliente || !inputs) {
+    return res.status(400).json({ error: "Faltan datos: 'ramo' (automoviles|hcm), 'cliente' e 'inputs' son requeridos." });
+  }
+  if (typeof cliente.nombre !== "string" || !cliente.nombre.trim() || typeof cliente.cedula !== "string" || !cliente.cedula.trim()) {
+    return res.status(400).json({ error: "El cliente debe incluir nombre y cédula." });
+  }
+
+  const cfg = ramo === "automoviles" ? quoterConfigCache.rcv : quoterConfigCache.hcm;
+  if (!cfg) {
+    return res.status(500).json({ error: "El cotizador no está configurado para ese ramo." });
+  }
+  const resultado = ramo === "automoviles" ? corredoresService.cotizarRcv(inputs, cfg) : corredoresService.cotizarHcm(inputs, cfg);
+  if (!resultado) {
+    return res.status(400).json({ error: "No se pudo calcular la cotización con los datos suministrados." });
+  }
+
+  const numero = `COT-${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+  try {
+    const pdfBuffer = await corredoresService.generarCotizacionPdf({
+      companyName: COMPANY_NAME,
+      cliente: {
+        nombre: cliente.nombre.trim().slice(0, 200),
+        cedula: cliente.cedula.trim().slice(0, 20),
+        vehiculo: typeof cliente.vehiculo === "string" ? cliente.vehiculo.trim().slice(0, 200) : "",
+      },
+      corredor: req.corredor,
+      resultado,
+      inputs,
+      numero,
+    });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="cotizacion-${numero}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("Error al generar el PDF de cotización:", err);
+    res.status(500).json({ error: "No se pudo generar el PDF de la cotización." });
+  }
+});
+
+/** GET /api/corredor/emisiones — solicitudes de emisión enviadas por este corredor,
+ *  con su estado ("pendiente_aprobacion" | "aprobada" | "rechazada"). */
+app.get("/api/corredor/emisiones", requireCorredorAuth, async (req, res) => {
+  const emisiones = await corredoresService.listarEmisionesPorCorredor(req.corredor.id);
+  res.json({ emisiones });
+});
+
+/**
+ * POST /api/corredor/emisiones
+ * "EMISIÓN DE SOLICITUD: formulario para iniciar emisión de nueva póliza" — queda en
+ * estado "pendiente_aprobacion" hasta que gerencia la revisa desde /admin (ver
+ * PATCH /api/admin/emisiones/:id, que dispara la notificación "emision-resuelta").
+ * Body: { cliente: { nombre, cedula, telefono? }, ramo, detalle: {...} }
+ */
+app.post("/api/corredor/emisiones", requireCorredorAuth, async (req, res) => {
+  const { cliente, ramo, detalle } = req.body || {};
+  if (!cliente || typeof cliente.nombre !== "string" || !cliente.nombre.trim() || typeof cliente.cedula !== "string" || !cliente.cedula.trim()) {
+    return res.status(400).json({ error: "El cliente debe incluir nombre y cédula." });
+  }
+  if (typeof ramo !== "string" || !ramo.trim()) {
+    return res.status(400).json({ error: "El ramo es requerido." });
+  }
+  const emision = await corredoresService.crearEmision({
+    corredorId: req.corredor.id,
+    cliente: {
+      nombre: cliente.nombre.trim().slice(0, 200),
+      cedula: cliente.cedula.trim().slice(0, 20),
+      telefono: typeof cliente.telefono === "string" ? cliente.telefono.trim().slice(0, 30) : "",
+    },
+    ramo: ramo.trim().slice(0, 40),
+    detalle: detalle && typeof detalle === "object" ? detalle : {},
+  });
+  res.json({ ok: true, emision });
+});
+
+/** GET /api/corredor/documentos — catálogo de documentos descargables (condicionados
+ *  generales, tarifario, formulario de siniestros). */
+app.get("/api/corredor/documentos", requireCorredorAuth, (_req, res) => {
+  res.json({ documentos: corredoresService.listarDocumentos() });
+});
+
+/** GET /api/corredor/documentos/:key — descarga el PDF de un documento del catálogo. */
+app.get("/api/corredor/documentos/:key", requireCorredorAuth, async (req, res) => {
+  try {
+    const pdfBuffer = await corredoresService.generarDocumentoPdf(req.params.key, COMPANY_NAME);
+    if (!pdfBuffer) {
+      return res.status(404).json({ error: "Documento no encontrado." });
+    }
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${req.params.key}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    console.error("Error al generar el PDF del documento:", err);
+    res.status(500).json({ error: "No se pudo generar el documento." });
+  }
+});
+
+// Envío masivo de recordatorios — más sensible que una petición normal (dispara
+// varios WhatsApp a la vez), límite propio y más estricto.
+const corredorRecordatorioLimiter = rateLimit({
+  windowMs: 5 * 60_000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Ya enviaste recordatorios recientemente. Intenta de nuevo en unos minutos." },
+});
+
+/** Normaliza un teléfono guardado en el perfil de un cliente al formato que espera
+ *  Twilio ("whatsapp:+58..."). Ver nota en `cliente.telefono` — para clientes
+ *  identificados por WhatsApp ya viene con el prefijo; para los identificados por el
+ *  chat web (o editados a mano en /admin), puede venir en cualquier formato libre. */
+function toWhatsappAddress(telefono) {
+  if (!telefono) return null;
+  if (/^whatsapp:/i.test(telefono)) return telefono;
+  const digits = telefono.replace(/[^\d+]/g, "");
+  return /^\+[1-9]\d{6,14}$/.test(digits) ? `whatsapp:${digits}` : null;
+}
+
+/**
+ * POST /api/corredor/recordatorios
+ * "Envía recordatorio de renovación a todos mis clientes con póliza por vencer" —
+ * manda un WhatsApp a cada cliente ÚNICO de la cartera con al menos una póliza por
+ * vencer (según `dias`, 30 por defecto) que tenga teléfono registrado en su perfil de
+ * memoria persistente (ver services/polizas.service.js + clientesCache) — a los que no
+ * tienen teléfono se les excluye y se reportan aparte, no se inventa ningún dato de
+ * contacto. Requiere Twilio configurado (ver TWILIO_ACCOUNT_SID) — si no, no falla,
+ * simplemente no se envía nada (mismo criterio que el resto del proyecto).
+ */
+app.post("/api/corredor/recordatorios", corredorRecordatorioLimiter, requireCorredorAuth, async (req, res) => {
+  const dias = req.body && req.body.dias !== undefined ? Number(req.body.dias) : undefined;
+  const polizas = await corredoresService.polizasPorVencer(req.corredor.nombre, dias);
+
+  const porCliente = new Map();
+  for (const p of polizas) {
+    if (p.vigencia.vencida) continue; // el recordatorio es para "por vencer", no vencidas
+    if (!porCliente.has(p.cedula)) porCliente.set(p.cedula, []);
+    porCliente.get(p.cedula).push(p);
+  }
+
+  const enviados = [];
+  const sinTelefono = [];
+  for (const [cedula, polizasCliente] of porCliente.entries()) {
+    const cliente = getClienteByCedula(cedula);
+    const whatsappTo = cliente ? toWhatsappAddress(cliente.telefono) : null;
+    if (!whatsappTo) {
+      sinTelefono.push({ cedula, nombre: polizasCliente[0].titular });
+      continue;
+    }
+    const lista = polizasCliente
+      .map((p) => `• ${p.numero} (${POLIZA_RAMO_LABELS[p.ramo] || p.ramo}) — vence el ${p.vigencia_fin}`)
+      .join("\n");
+    const mensaje =
+      `Hola ${polizasCliente[0].titular.split(" ")[0]}, te escribimos de ${COMPANY_NAME} 👋\n\n` +
+      `Tu(s) póliza(s) está(n) por vencer:\n${lista}\n\n` +
+      `Escríbenos por aquí o contacta a tu corredor ${req.corredor.nombre} para renovarla(s) a tiempo.`;
+    await sendWhatsappMessage(whatsappTo, mensaje);
+    enviados.push({ cedula, nombre: polizasCliente[0].titular, polizas: polizasCliente.map((p) => p.numero) });
+  }
+
+  res.json({
+    ok: true,
+    enviados,
+    sinTelefono,
+    twilioConfigurado: Boolean(twilioClient),
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Rutas — Panel de administración: Emisiones (aprobar/rechazar solicitudes de
+// corredores, ver POST /api/corredor/emisiones)
+// ---------------------------------------------------------------------------
+
+/** Agrega `corredorNombre` a una emisión (join en memoria contra data/corredores.json)
+ *  — usado tanto por el listado como por la respuesta del PATCH, para que el panel
+ *  siempre tenga ese dato disponible sin volver a pedir la lista completa. */
+function enriquecerEmision(e) {
+  const corredor = corredoresService.buscarPorId(e.corredorId);
+  return { ...e, corredorNombre: corredor ? corredor.nombre : "—" };
+}
+
+app.get("/api/admin/emisiones", requireAdmin, async (_req, res) => {
+  const emisiones = await corredoresService.listarTodasEmisiones();
+  res.json({ emisiones: emisiones.map(enriquecerEmision) });
+});
+
+/**
+ * PATCH /api/admin/emisiones/:id
+ * Aprueba o rechaza una solicitud de emisión — dispara la notificación en tiempo real
+ * "emision-resuelta" al corredor que la envió (ver "Aviso cuando La Occidental aprueba
+ * o rechaza una solicitud de emisión" del pedido original).
+ */
+app.patch("/api/admin/emisiones/:id", requireAdmin, async (req, res) => {
+  const existente = await corredoresService.buscarEmision(req.params.id);
+  if (!existente) {
+    return res.status(404).json({ error: "Solicitud de emisión no encontrada." });
+  }
+  const body = req.body || {};
+  const patch = {};
+  if (body.estado === "aprobada" || body.estado === "rechazada" || body.estado === "pendiente_aprobacion") {
+    patch.estado = body.estado;
+  }
+  if (typeof body.notasAdmin === "string") patch.notasAdmin = body.notasAdmin.slice(0, 1000);
+
+  const updated = await corredoresService.actualizarEmision(req.params.id, patch);
+  if (!updated) {
+    return res.status(500).json({ error: "No se pudo actualizar la solicitud." });
+  }
+
+  if (patch.estado && patch.estado !== "pendiente_aprobacion") {
+    notifyCorredor(updated.corredorId, "emision-resuelta", {
+      id: updated.id,
+      estado: updated.estado,
+      cliente: updated.cliente,
+      ramo: updated.ramo,
+    });
+  }
+
+  res.json({ ok: true, emision: enriquecerEmision(updated) });
+});
+
 // Manejo de errores de CORS y otros errores no capturados en middlewares.
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -3434,7 +4625,16 @@ app.listen(PORT, () => {
   console.log(`✅ ${COMPANY_NAME} · Chatbot backend escuchando en http://localhost:${PORT}`);
   console.log(`   Modelo configurado: ${CLAUDE_MODEL}`);
   console.log(`   Panel de administración: http://localhost:${PORT}/admin`);
+  if (JWT_SECRET) {
+    console.log(`   Portal de corredores: http://localhost:${PORT}/corredor`);
+  } else {
+    console.warn("[aviso] JWT_SECRET no está definida — el portal de corredores (/corredor) quedará deshabilitado.");
+  }
 });
+
+// Chequeo periódico de "pólizas por vencer en 7 días" para las notificaciones en
+// tiempo real del portal de corredores — ver iniciarChequeoVencimientosCorredores().
+iniciarChequeoVencimientosCorredores();
 
 // En segundo plano (no bloquea el arranque): genera los posters/thumbnails que falten
 // para los videos del catálogo — ver ensureVideoPosters().

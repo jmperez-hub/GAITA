@@ -822,6 +822,55 @@
     return el;
   }
 
+  /**
+   * Botón "📍 Compartir mi ubicación" — aparece cuando el flujo de apertura de un
+   * siniestro llega al paso de ubicación (evento SSE "location_request", ver
+   * handleSiniestroFlowGate en server.js). Usa la Geolocation API del navegador; si el
+   * usuario la deniega o no está disponible, simplemente puede escribir la dirección a
+   * mano (el paso acepta texto libre igual). Se autoelimina al usarse o al enviar
+   * cualquier otro mensaje mientras tanto (ver clearLocationRequestButton).
+   */
+  function appendLocationRequestButton() {
+    clearLocationRequestButton();
+    const body = document.getElementById("lo-chat-body");
+    const wrap = document.createElement("div");
+    wrap.className = "lo-location-request";
+    wrap.id = "lo-location-request";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lo-location-btn";
+    btn.textContent = "📍 Compartir mi ubicación";
+    btn.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        appendSystemNote("Tu navegador no soporta compartir ubicación — puedes escribir la dirección en el chat.");
+        clearLocationRequestButton();
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Obteniendo ubicación…";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          clearLocationRequestButton();
+          const { latitude, longitude } = pos.coords;
+          sendMessage(`📍 Mi ubicación: https://www.google.com/maps?q=${latitude},${longitude}`);
+        },
+        () => {
+          appendSystemNote("No pude acceder a tu ubicación — puedes escribir la dirección en el chat.");
+          clearLocationRequestButton();
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    wrap.appendChild(btn);
+    body.appendChild(wrap);
+    scrollToBottom();
+  }
+
+  function clearLocationRequestButton() {
+    const existing = document.getElementById("lo-location-request");
+    if (existing) existing.remove();
+  }
+
   function scrollToBottom() {
     const body = document.getElementById("lo-chat-body");
     body.scrollTop = body.scrollHeight;
@@ -1413,6 +1462,7 @@
     const attachment = pendingAttachment;
     if (!trimmed && !attachment) return;
 
+    clearLocationRequestButton();
     const finalText = trimmed || defaultCaptionForAttachment(attachment);
 
     isSending = true;
@@ -1520,6 +1570,8 @@
             } else {
               appendMessageEl("error", msg);
             }
+          } else if (parsed.event === "location_request") {
+            appendLocationRequestButton();
           } else if (parsed.event === "audio-pending") {
             audioPendingNoteEl = appendSystemNote("🎙️ Generando respuesta en audio…");
           } else if (parsed.event === "audio") {

@@ -42,6 +42,10 @@
     ramoLabels: RAMO_LABELS_FALLBACK,
     clientes: [],
     clientesFiltered: [],
+    siniestros: [],
+    siniestrosFiltered: [],
+    emisiones: [],
+    emisionesFiltered: [],
   };
 
   function qs(id) {
@@ -568,10 +572,12 @@
   // Pestañas: Conversaciones ↔ Cotizador ↔ Reportes
   // -------------------------------------------------------------------------
 
-  const VIEWS = ["conversations", "clientes", "quoter", "reports"];
+  const VIEWS = ["conversations", "clientes", "siniestros", "emisiones", "quoter", "reports"];
   let quoterViewLoaded = false;
   let reportsViewLoaded = false;
   let clientesViewLoaded = false;
+  let siniestrosViewLoaded = false;
+  let emisionesViewLoaded = false;
 
   function showView(name) {
     VIEWS.forEach((v) => {
@@ -590,6 +596,14 @@
     if (name === "clientes" && !clientesViewLoaded) {
       clientesViewLoaded = true;
       loadClientes();
+    }
+    if (name === "siniestros" && !siniestrosViewLoaded) {
+      siniestrosViewLoaded = true;
+      loadSiniestros();
+    }
+    if (name === "emisiones" && !emisionesViewLoaded) {
+      emisionesViewLoaded = true;
+      loadEmisiones();
     }
   }
 
@@ -693,13 +707,85 @@
       const res = await apiFetch(`/api/admin/clientes/${encodeURIComponent(cedula)}`);
       if (!res.ok) throw new Error("No se pudo cargar el cliente.");
       const data = await res.json();
-      renderClientDetail(data.cliente, data.conversaciones || []);
+      renderClientDetail(data.cliente, data.conversaciones || [], data.polizas || []);
     } catch (err) {
       body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(err.message || "Error al cargar el cliente.")}</div>`;
     }
   }
 
-  function renderClientDetail(cliente, conversaciones) {
+  const POLIZA_RAMO_LABELS = {
+    automoviles: "Automóviles",
+    autos: "Automóviles",
+    hcm: "HCM",
+    personas: "Personas",
+    patrimonial: "Patrimonial",
+    patrimoniales: "Patrimoniales",
+    fianza: "Fianza",
+    fianzas: "Fianzas",
+  };
+
+  /** Insignia de vigencia de una póliza — usa `poliza.vigencia`, ya calculada por
+   *  polizasService.verificarVigencia() en el servidor (ver GET /api/admin/clientes/:cedula). */
+  function polizaVigenciaBadge(vig) {
+    if (!vig) return "—";
+    if (vig.vencida) {
+      return `<span class="lo-admin-badge lo-admin-badge-vencida">Vencida hace ${Math.abs(vig.diasRestantes)} d</span>`;
+    }
+    if (vig.porVencer) {
+      return `<span class="lo-admin-badge lo-admin-badge-por-vencer">Vence en ${vig.diasRestantes} d</span>`;
+    }
+    return `<span class="lo-admin-badge lo-admin-badge-vigente">Vigente</span>`;
+  }
+
+  /** Sección de solo lectura con las pólizas REALES del cliente (services/polizas.service.js)
+   *  — distinta del campo `polizas` (texto libre) del perfil, que es autoreportado. */
+  function polizasSectionHtml(polizas) {
+    if (!polizas.length) {
+      return `
+        <h3 class="lo-admin-client-history-title">📋 Pólizas registradas (0)</h3>
+        <p class="lo-admin-hint" style="margin:0 20px 16px">
+          No se encontró ninguna póliza de este cliente en el sistema de pólizas.
+        </p>
+      `;
+    }
+    const rowsHtml = polizas
+      .map(
+        (p) => `
+          <tr>
+            <td>${escapeHtml(p.numero)}</td>
+            <td>${escapeHtml(POLIZA_RAMO_LABELS[p.ramo] || p.ramo)}</td>
+            <td>${polizaVigenciaBadge(p.vigencia)}</td>
+            <td>${escapeHtml(String(p.prima_anual))} ${escapeHtml(p.moneda || "")}</td>
+            <td>${escapeHtml(String(p.suma_asegurada))} ${escapeHtml(p.moneda || "")}</td>
+            <td>${escapeHtml(p.corredor || "—")}</td>
+            <td>${p.siniestros_activos > 0 ? `<span class="lo-admin-badge lo-admin-badge-advisor-yes">${p.siniestros_activos}</span>` : "—"}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    return `
+      <h3 class="lo-admin-client-history-title">📋 Pólizas registradas (${polizas.length})</h3>
+      <div class="lo-admin-table-scroll">
+        <table class="lo-admin-table">
+          <thead>
+            <tr>
+              <th>Número</th>
+              <th>Ramo</th>
+              <th>Vigencia</th>
+              <th>Prima anual</th>
+              <th>Suma asegurada</th>
+              <th>Corredor</th>
+              <th>Siniestros activos</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderClientDetail(cliente, conversaciones, polizas) {
     qs("lo-client-modal-title").textContent = cliente.nombre || cliente.cedula;
     qs("lo-client-modal-meta").textContent = `${cliente.cedula} · Cliente desde ${formatDateTime(cliente.clienteDesde)}`;
 
@@ -788,6 +874,8 @@
         </div>
       </div>
 
+      ${polizasSectionHtml(polizas || [])}
+
       <h3 class="lo-admin-client-history-title">💬 Conversaciones vinculadas (${conversaciones.length})</h3>
       <div class="lo-admin-table-scroll">
         <table class="lo-admin-table">
@@ -861,6 +949,481 @@
   function closeClientModal() {
     qs("lo-client-modal").hidden = true;
     currentClienteCedula = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Siniestros (services/siniestros.service.js) — lista, filtros, y detalle editable
+  // -------------------------------------------------------------------------
+
+  const SINIESTRO_ESTADO_LABELS = {
+    recibido: "Recibido",
+    pendiente_documentacion: "Pendiente de documentación",
+    en_investigacion: "En investigación",
+    aprobado: "Aprobado",
+    rechazado: "Rechazado",
+    por_pagar: "Por pagar",
+    pagado: "Pagado",
+  };
+
+  const SINIESTRO_TIPO_LABELS = {
+    accidente: "Accidente de tránsito",
+    colision: "Accidente de tránsito",
+    robo: "Robo",
+    incendio: "Incendio",
+    hospitalizacion: "Hospitalización (HCM)",
+  };
+
+  const SINIESTRO_DOC_LABELS = {
+    fotos_dano: "Fotos del daño",
+    denuncia_policial: "Denuncia policial",
+    croquis: "Croquis del accidente",
+    presupuesto_taller: "Presupuesto del taller",
+    inventario_bienes: "Inventario de bienes",
+    informe_bomberos: "Informe de bomberos",
+    presupuesto_reparacion: "Presupuesto de reparación",
+    diagnostico_medico: "Diagnóstico médico",
+    facturas: "Facturas",
+    orden_hospitalizacion: "Orden de hospitalización",
+  };
+
+  function siniestroBadgeHtml(s) {
+    const cls = `lo-admin-badge lo-admin-badge-siniestro-${s.estado}`;
+    const label = SINIESTRO_ESTADO_LABELS[s.estado] || s.estado;
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }
+
+  async function loadSiniestros() {
+    qs("lo-siniestros-loading").hidden = false;
+    qs("lo-siniestros-empty").hidden = true;
+    try {
+      const params = new URLSearchParams();
+      const estado = qs("lo-siniestros-filter-estado").value;
+      const mayor = qs("lo-siniestros-filter-mayor").value;
+      if (estado) params.set("estado", estado);
+      if (mayor === "si") params.set("mayor", "1");
+      const qsStr = params.toString();
+      const res = await apiFetch(`/api/admin/siniestros${qsStr ? `?${qsStr}` : ""}`);
+      if (!res.ok) throw new Error("No se pudo cargar la lista de siniestros.");
+      const data = await res.json();
+      state.siniestros = data.siniestros || [];
+      applySiniestrosFilter();
+    } catch (err) {
+      qs("lo-siniestros-table-body").innerHTML = "";
+      qs("lo-siniestros-empty").hidden = false;
+      qs("lo-siniestros-empty").textContent = err.message || "Error al cargar los siniestros.";
+    } finally {
+      qs("lo-siniestros-loading").hidden = true;
+    }
+  }
+
+  function applySiniestrosFilter() {
+    const term = normalizeSearch(qs("lo-siniestros-search").value);
+    state.siniestrosFiltered = !term
+      ? state.siniestros
+      : state.siniestros.filter((s) =>
+          [s.numero, s.cedula_titular, s.clienteNombre].some((f) => normalizeSearch(f).includes(term))
+        );
+    renderSiniestrosTable();
+  }
+
+  function renderSiniestrosTable() {
+    const tbody = qs("lo-siniestros-table-body");
+    const emptyEl = qs("lo-siniestros-empty");
+
+    if (state.siniestrosFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.siniestros.length === 0
+          ? "Todavía no hay siniestros registrados — aparecerán aquí en cuanto Lucy abra uno en el chat."
+          : "No hay siniestros que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.siniestrosFiltered
+      .map((s) => {
+        const mayorHtml = s.siniestro_mayor ? '<span class="lo-admin-badge lo-admin-badge-mayor">🚨 Mayor</span>' : "";
+        return `
+          <tr data-numero="${escapeAttr(s.numero)}">
+            <td>${escapeHtml(s.numero)}</td>
+            <td>${escapeHtml(s.clienteNombre || s.cedula_titular || "—")}</td>
+            <td>${escapeHtml(SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo)}</td>
+            <td>${siniestroBadgeHtml(s)}</td>
+            <td>$${escapeHtml(String(s.monto_reclamado))}</td>
+            <td>${escapeHtml(s.ajustador_asignado || "—")}</td>
+            <td>${escapeHtml(formatDateTime(s.fecha_reporte))}</td>
+            <td>${mayorHtml}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openSiniestroDetail(row.getAttribute("data-numero")));
+    });
+  }
+
+  let currentSiniestroNumero = null;
+
+  async function openSiniestroDetail(numero) {
+    const modal = qs("lo-siniestro-modal");
+    const body = qs("lo-siniestro-modal-body");
+    const meta = qs("lo-siniestro-modal-meta");
+
+    currentSiniestroNumero = numero;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando siniestro…</div>';
+    meta.textContent = "";
+
+    try {
+      const res = await apiFetch(`/api/admin/siniestros/${encodeURIComponent(numero)}`);
+      if (!res.ok) throw new Error("No se pudo cargar el siniestro.");
+      const data = await res.json();
+      renderSiniestroDetail(data.siniestro);
+    } catch (err) {
+      body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(err.message || "Error al cargar el siniestro.")}</div>`;
+    }
+  }
+
+  function renderSiniestroDetail(s) {
+    qs("lo-siniestro-modal-title").textContent = s.numero;
+    qs("lo-siniestro-modal-meta").textContent =
+      `${s.clienteNombre || s.cedula_titular || "—"} · Póliza ${s.poliza || "—"} · Reportado ${formatDateTime(s.fecha_reporte)}` +
+      (s.siniestro_mayor ? " · 🚨 Siniestro mayor" : "");
+
+    const estadoOptionsHtml = Object.entries(SINIESTRO_ESTADO_LABELS)
+      .map(([value, label]) => `<option value="${value}" ${s.estado === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+      .join("");
+
+    // El checklist de documentos se arma con la UNIÓN de recibidos + pendientes (es la
+    // lista completa que le pidió Lucy según el tipo, ver DOCUMENTOS_POR_TIPO en
+    // services/siniestros.service.js) — marcar/desmarcar mueve el documento entre
+    // ambas listas al guardar.
+    const recibidosSet = new Set(s.documentos_recibidos || []);
+    const todosLosDocs = [...new Set([...(s.documentos_recibidos || []), ...(s.documentos_pendientes || [])])];
+    const documentosHtml = todosLosDocs.length
+      ? todosLosDocs
+          .map(
+            (d) => `
+              <label class="lo-quote-checkbox">
+                <input type="checkbox" class="lo-siniestro-doc-check" value="${escapeAttr(d)}" ${recibidosSet.has(d) ? "checked" : ""} />
+                <span>${escapeHtml(SINIESTRO_DOC_LABELS[d] || d)}</span>
+              </label>
+            `
+          )
+          .join("")
+      : '<p class="lo-admin-hint">Este tipo de siniestro no requiere documentos.</p>';
+
+    const comentariosHtml = (s.comentarios || []).length
+      ? s.comentarios
+          .map(
+            (c) => `
+              <div class="lo-admin-hint" style="margin-bottom:6px">
+                <strong>${escapeHtml(formatDateTime(c.fecha))} — ${escapeHtml(c.autor || "—")}:</strong> ${escapeHtml(c.texto)}
+              </div>
+            `
+          )
+          .join("")
+      : '<p class="lo-admin-hint">Sin comentarios todavía.</p>';
+
+    qs("lo-siniestro-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint">
+          <strong>Tipo:</strong> ${escapeHtml(SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo)} ·
+          <strong>Ocurrió:</strong> ${escapeHtml(s.fecha_ocurrencia || "—")} ·
+          <strong>Ubicación:</strong> ${escapeHtml(s.ubicacion || "—")}
+        </div>
+        <div class="lo-admin-hint" style="margin-top:6px">
+          <strong>Descripción:</strong> ${escapeHtml(s.descripcion || "—")}
+        </div>
+
+        <div class="lo-admin-client-field-row" style="margin-top:14px">
+          <label class="lo-quote-field">
+            <span>Estado</span>
+            <select id="lo-siniestro-field-estado">${estadoOptionsHtml}</select>
+          </label>
+          <label class="lo-quote-field">
+            <span>Ajustador asignado</span>
+            <input type="text" id="lo-siniestro-field-ajustador" value="${escapeAttr(s.ajustador_asignado || "")}" maxlength="100" />
+          </label>
+        </div>
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Monto reclamado</span>
+            <input type="text" value="$${escapeAttr(String(s.monto_reclamado))}" disabled />
+          </label>
+          <label class="lo-quote-field">
+            <span>Monto aprobado</span>
+            <input type="number" id="lo-siniestro-field-monto-aprobado" value="${s.monto_aprobado != null ? escapeAttr(String(s.monto_aprobado)) : ""}" min="0" step="0.01" placeholder="Sin definir" />
+          </label>
+        </div>
+        <label class="lo-quote-field">
+          <span>Fecha estimada de resolución</span>
+          <input type="text" id="lo-siniestro-field-fecha" value="${escapeAttr(s.fecha_estimada_resolucion || "")}" placeholder="AAAA-MM-DD" maxlength="20" />
+        </label>
+
+        <div class="lo-admin-hint" style="margin-top:10px"><strong>📎 Documentos</strong></div>
+        <div id="lo-siniestro-docs">${documentosHtml}</div>
+
+        <div class="lo-admin-hint" style="margin-top:10px"><strong>💬 Comentarios</strong></div>
+        <div id="lo-siniestro-comentarios">${comentariosHtml}</div>
+        <label class="lo-quote-field">
+          <span>Agregar comentario</span>
+          <textarea id="lo-siniestro-field-comentario" rows="2" maxlength="500"></textarea>
+        </label>
+
+        <div class="lo-admin-card-save">
+          <p class="lo-quoter-save-status" id="lo-siniestro-save-status" hidden></p>
+          <button type="button" class="lo-admin-btn-primary" id="lo-siniestro-save-btn">💾 Guardar cambios</button>
+        </div>
+      </div>
+    `;
+
+    qs("lo-siniestro-save-btn").addEventListener("click", () => saveSiniestro(s.numero));
+  }
+
+  async function saveSiniestro(numero) {
+    const btn = qs("lo-siniestro-save-btn");
+    const statusEl = qs("lo-siniestro-save-status");
+    btn.disabled = true;
+    statusEl.hidden = true;
+
+    const documentosRecibidos = Array.from(document.querySelectorAll(".lo-siniestro-doc-check"))
+      .filter((el) => el.checked)
+      .map((el) => el.value);
+    const documentosPendientes = Array.from(document.querySelectorAll(".lo-siniestro-doc-check"))
+      .filter((el) => !el.checked)
+      .map((el) => el.value);
+
+    const montoAprobadoRaw = qs("lo-siniestro-field-monto-aprobado").value;
+    const patch = {
+      estado: qs("lo-siniestro-field-estado").value,
+      ajustador_asignado: qs("lo-siniestro-field-ajustador").value.trim(),
+      monto_aprobado: montoAprobadoRaw === "" ? null : Number(montoAprobadoRaw),
+      fecha_estimada_resolucion: qs("lo-siniestro-field-fecha").value.trim(),
+      documentos_recibidos: documentosRecibidos,
+      documentos_pendientes: documentosPendientes,
+    };
+    const nuevoComentario = qs("lo-siniestro-field-comentario").value.trim();
+    if (nuevoComentario) patch.nuevoComentario = nuevoComentario;
+
+    try {
+      const res = await apiFetch(`/api/admin/siniestros/${encodeURIComponent(numero)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar el siniestro.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      renderSiniestroDetail(data.siniestro);
+      loadSiniestros(); // refresca la tabla en segundo plano (estado, ajustador, etc.)
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeSiniestroModal() {
+    qs("lo-siniestro-modal").hidden = true;
+    currentSiniestroNumero = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Emisiones (solicitudes del portal de corredores) — lista, filtros, y
+  // aprobar/rechazar con notificación en tiempo real al corredor.
+  // -------------------------------------------------------------------------
+
+  const EMISION_ESTADO_LABELS = {
+    pendiente_aprobacion: "Pendiente de aprobación",
+    aprobada: "Aprobada",
+    rechazada: "Rechazada",
+  };
+
+  // Vocabulario propio del formulario de emisión del portal de corredores (ver
+  // co-emision-ramo en corredor.html) — distinto de RAMO_LABELS_FALLBACK (que es el
+  // vocabulario de detección de ramo en las conversaciones del chat).
+  const EMISION_RAMO_LABELS = {
+    automoviles: "Automóviles",
+    autos: "Automóviles",
+    hcm: "HCM",
+    personas: "Personas",
+    patrimonial: "Patrimonial",
+    patrimoniales: "Patrimoniales",
+    fianza: "Fianza",
+    fianzas: "Fianzas",
+  };
+
+  function emisionBadgeHtml(estado) {
+    const cls = estado === "aprobada" ? "lo-admin-badge-vigente" : estado === "rechazada" ? "lo-admin-badge-vencida" : "lo-admin-badge-por-vencer";
+    return `<span class="lo-admin-badge ${cls}">${escapeHtml(EMISION_ESTADO_LABELS[estado] || estado)}</span>`;
+  }
+
+  async function loadEmisiones() {
+    qs("lo-emisiones-loading").hidden = false;
+    qs("lo-emisiones-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/emisiones");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de solicitudes.");
+      const data = await res.json();
+      state.emisiones = data.emisiones || [];
+      applyEmisionesFilter();
+    } catch (err) {
+      qs("lo-emisiones-table-body").innerHTML = "";
+      qs("lo-emisiones-empty").hidden = false;
+      qs("lo-emisiones-empty").textContent = err.message || "Error al cargar las solicitudes.";
+    } finally {
+      qs("lo-emisiones-loading").hidden = true;
+    }
+  }
+
+  function applyEmisionesFilter() {
+    const term = normalizeSearch(qs("lo-emisiones-search").value);
+    const estado = qs("lo-emisiones-filter-estado").value;
+    state.emisionesFiltered = state.emisiones.filter((e) => {
+      const matchesTerm = !term || [e.id, e.cliente.nombre, e.cliente.cedula, e.corredorNombre].some((f) => normalizeSearch(f).includes(term));
+      const matchesEstado = !estado || e.estado === estado;
+      return matchesTerm && matchesEstado;
+    });
+    renderEmisionesTable();
+  }
+
+  function renderEmisionesTable() {
+    const tbody = qs("lo-emisiones-table-body");
+    const emptyEl = qs("lo-emisiones-empty");
+
+    if (state.emisionesFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.emisiones.length === 0
+          ? "Todavía no hay solicitudes de emisión — aparecerán aquí en cuanto un corredor envíe una desde su portal."
+          : "No hay solicitudes que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.emisionesFiltered
+      .map(
+        (e) => `
+          <tr data-id="${escapeAttr(e.id)}">
+            <td>${escapeHtml(e.id)}</td>
+            <td>${escapeHtml(e.corredorNombre)}</td>
+            <td>${escapeHtml(e.cliente.nombre)} (${escapeHtml(e.cliente.cedula)})</td>
+            <td>${escapeHtml(EMISION_RAMO_LABELS[e.ramo] || e.ramo)}</td>
+            <td>${emisionBadgeHtml(e.estado)}</td>
+            <td>${escapeHtml(formatDateTime(e.creadoEn))}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openEmisionDetail(row.getAttribute("data-id")));
+    });
+  }
+
+  let currentEmisionId = null;
+
+  async function openEmisionDetail(id) {
+    const modal = qs("lo-emision-modal");
+    const body = qs("lo-emision-modal-body");
+    currentEmisionId = id;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando solicitud…</div>';
+
+    const emision = state.emisiones.find((e) => e.id === id);
+    if (!emision) {
+      body.innerHTML = '<div class="lo-admin-empty">Solicitud no encontrada.</div>';
+      return;
+    }
+    renderEmisionDetail(emision);
+  }
+
+  function renderEmisionDetail(e) {
+    qs("lo-emision-modal-title").textContent = e.id;
+    qs("lo-emision-modal-meta").textContent = `Corredor: ${e.corredorNombre} · Enviada ${formatDateTime(e.creadoEn)}`;
+
+    const detalleHtml = e.detalle && e.detalle.notas ? `<p class="lo-admin-hint">${escapeHtml(e.detalle.notas)}</p>` : "";
+    const puedeResolver = e.estado === "pendiente_aprobacion";
+
+    qs("lo-emision-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint">
+          <strong>Cliente:</strong> ${escapeHtml(e.cliente.nombre)} (${escapeHtml(e.cliente.cedula)})
+          ${e.cliente.telefono ? ` · ${escapeHtml(e.cliente.telefono)}` : ""}
+        </div>
+        <div class="lo-admin-hint" style="margin-top:4px">
+          <strong>Ramo:</strong> ${escapeHtml(EMISION_RAMO_LABELS[e.ramo] || e.ramo)} ·
+          <strong>Estado:</strong> ${emisionBadgeHtml(e.estado)}
+        </div>
+        ${detalleHtml}
+        ${e.notasAdmin ? `<p class="lo-admin-hint"><strong>Notas internas:</strong> ${escapeHtml(e.notasAdmin)}</p>` : ""}
+
+        <label class="lo-quote-field">
+          <span>Notas internas (opcional)</span>
+          <textarea id="lo-emision-field-notas" rows="2" maxlength="1000">${escapeHtml(e.notasAdmin || "")}</textarea>
+        </label>
+
+        <p class="lo-quoter-save-status" id="lo-emision-save-status" hidden></p>
+        <div class="lo-admin-card-save">
+          ${
+            puedeResolver
+              ? `
+                <button type="button" class="lo-admin-btn-ghost" id="lo-emision-rechazar-btn">❌ Rechazar</button>
+                <button type="button" class="lo-admin-btn-primary" id="lo-emision-aprobar-btn">✅ Aprobar</button>
+              `
+              : `<span class="lo-admin-hint">Esta solicitud ya fue resuelta (${emisionBadgeHtml(e.estado)}) — puedes actualizar las notas internas igual.</span>
+                 <button type="button" class="lo-admin-btn-primary" id="lo-emision-notas-btn">💾 Guardar notas</button>`
+          }
+        </div>
+      </div>
+    `;
+
+    if (puedeResolver) {
+      qs("lo-emision-aprobar-btn").addEventListener("click", () => resolverEmision(e.id, "aprobada"));
+      qs("lo-emision-rechazar-btn").addEventListener("click", () => resolverEmision(e.id, "rechazada"));
+    } else {
+      qs("lo-emision-notas-btn").addEventListener("click", () => resolverEmision(e.id, e.estado));
+    }
+  }
+
+  async function resolverEmision(id, estado) {
+    const statusEl = qs("lo-emision-save-status");
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/emisiones/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ estado, notasAdmin: qs("lo-emision-field-notas").value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo actualizar la solicitud.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      const idx = state.emisiones.findIndex((em) => em.id === id);
+      if (idx !== -1) state.emisiones[idx] = data.emision;
+      renderEmisionDetail(data.emision);
+      applyEmisionesFilter();
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  function closeEmisionModal() {
+    qs("lo-emision-modal").hidden = true;
+    currentEmisionId = null;
   }
 
   // -------------------------------------------------------------------------
@@ -1504,8 +2067,20 @@
     qs("lo-admin-modal-backdrop").addEventListener("click", closeModal);
     qs("lo-client-modal-close").addEventListener("click", closeClientModal);
     qs("lo-client-modal-backdrop").addEventListener("click", closeClientModal);
+    qs("lo-siniestro-modal-close").addEventListener("click", closeSiniestroModal);
+    qs("lo-siniestro-modal-backdrop").addEventListener("click", closeSiniestroModal);
+    qs("lo-emision-modal-close").addEventListener("click", closeEmisionModal);
+    qs("lo-emision-modal-backdrop").addEventListener("click", closeEmisionModal);
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      if (!qs("lo-emision-modal").hidden) {
+        closeEmisionModal();
+        return;
+      }
+      if (!qs("lo-siniestro-modal").hidden) {
+        closeSiniestroModal();
+        return;
+      }
       if (!qs("lo-client-modal").hidden) {
         closeClientModal();
         return;
@@ -1516,12 +2091,25 @@
     // Pestañas
     qs("lo-admin-tab-conversations").addEventListener("click", () => showView("conversations"));
     qs("lo-admin-tab-clientes").addEventListener("click", () => showView("clientes"));
+    qs("lo-admin-tab-siniestros").addEventListener("click", () => showView("siniestros"));
+    qs("lo-admin-tab-emisiones").addEventListener("click", () => showView("emisiones"));
     qs("lo-admin-tab-quoter").addEventListener("click", () => showView("quoter"));
     qs("lo-admin-tab-reports").addEventListener("click", () => showView("reports"));
 
     // Clientes (memoria persistente)
     qs("lo-clientes-search").addEventListener("input", debounce(applyClientesFilter, 200));
     qs("lo-clientes-refresh").addEventListener("click", loadClientes);
+
+    // Siniestros
+    qs("lo-siniestros-search").addEventListener("input", debounce(applySiniestrosFilter, 200));
+    qs("lo-siniestros-filter-estado").addEventListener("change", loadSiniestros);
+    qs("lo-siniestros-filter-mayor").addEventListener("change", loadSiniestros);
+    qs("lo-siniestros-refresh").addEventListener("click", loadSiniestros);
+
+    // Emisiones (solicitudes del portal de corredores)
+    qs("lo-emisiones-search").addEventListener("input", debounce(applyEmisionesFilter, 200));
+    qs("lo-emisiones-filter-estado").addEventListener("change", applyEmisionesFilter);
+    qs("lo-emisiones-refresh").addEventListener("click", loadEmisiones);
 
     // Editor del cotizador: tablas editables (agregar/eliminar filas)
     wireSimpleTable("lo-quoter-rcv-tarifas-body", "lo-quoter-rcv-tarifa-add", rcvTarifaRowHtml);
