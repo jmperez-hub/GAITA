@@ -68,6 +68,11 @@ const CONVERSATIONS_FILE = process.env.CONVERSATIONS_FILE
   ? path.resolve(__dirname, process.env.CONVERSATIONS_FILE)
   : path.join(__dirname, "conversations.json");
 
+// --- Memoria persistente por cliente (identificado por cédula) ---
+const CLIENTES_FILE = process.env.CLIENTES_FILE
+  ? path.resolve(__dirname, process.env.CLIENTES_FILE)
+  : path.join(__dirname, "data", "clientes.json");
+
 // --- Cotizador automático ---
 const QUOTER_CONFIG_FILE = process.env.QUOTER_CONFIG_FILE
   ? path.resolve(__dirname, process.env.QUOTER_CONFIG_FILE)
@@ -675,6 +680,351 @@ function persistConversations() {
 }
 
 loadConversationsFromDisk();
+
+// ---------------------------------------------------------------------------
+// Memoria persistente por cliente (data/clientes.json)
+// ---------------------------------------------------------------------------
+//
+// Un cliente se identifica por su cédula (clave del objeto). A diferencia de
+// conversations.json (una entrada por sesión/teléfono, efímera), este archivo vive
+// MÁS ALLÁ de una sola conversación: el mismo cliente puede escribir hoy por WhatsApp
+// y mañana por el chat web, con cédulas iguales -> mismo perfil. Mismo patrón de
+// caché-en-memoria + cola de escritura que conversations.json (ver arriba).
+
+fs.mkdirSync(path.dirname(CLIENTES_FILE), { recursive: true });
+
+/** @type {Record<string, any>} */
+let clientesCache = {};
+let clientesWriteQueue = Promise.resolve();
+
+function loadClientesFromDisk() {
+  try {
+    if (fs.existsSync(CLIENTES_FILE)) {
+      const raw = fs.readFileSync(CLIENTES_FILE, "utf8");
+      clientesCache = raw.trim() ? JSON.parse(raw) : {};
+    }
+  } catch (err) {
+    console.error(`[aviso] No se pudo leer ${path.basename(CLIENTES_FILE)}, se iniciará vacío:`, err.message);
+    clientesCache = {};
+  }
+}
+
+function persistClientes() {
+  clientesWriteQueue = clientesWriteQueue.then(
+    () =>
+      new Promise((resolve) => {
+        const data = JSON.stringify(clientesCache, null, 2);
+        fs.writeFile(CLIENTES_FILE, data, "utf8", (err) => {
+          if (err) console.error("Error al guardar clientes.json:", err.message);
+          resolve();
+        });
+      })
+  );
+  return clientesWriteQueue;
+}
+
+loadClientesFromDisk();
+
+// Cédula venezolana: letra de nacionalidad (V/E, ocasionalmente J/G para RIF de
+// empresas, se aceptan por si un usuario los usa) + 6-9 dígitos, con o sin guión.
+const CEDULA_RE = /\b([veVEjgJG])[.\-\s]?(\d{6,9})\b/;
+// Número de póliza: formato "RAMO-AAAA-NNN" (p. ej. "AUTO-2024-001", "HCM-2023-045").
+const POLIZA_RE = /\b([A-Za-z]{2,15}-\d{4}-\d{2,6})\b/;
+
+/** Normaliza una cédula reconocida a la forma canónica "V-12345678" (mayúscula, con guión). */
+function normalizeCedula(raw) {
+  const m = CEDULA_RE.exec(String(raw || ""));
+  if (!m) return null;
+  return `${m[1].toUpperCase()}-${m[2]}`;
+}
+
+function extractPoliza(raw) {
+  const m = POLIZA_RE.exec(String(raw || ""));
+  return m ? m[1].toUpperCase() : null;
+}
+
+/** Intenta extraer una cédula o número de póliza de un texto libre — usado en el
+ *  flujo de identificación del cliente (ver handleClientIdentificationGate). */
+function extractIdentification(text) {
+  const cedula = normalizeCedula(text);
+  if (cedula) return { type: "cedula", value: cedula };
+  const poliza = extractPoliza(text);
+  if (poliza) return { type: "poliza", value: poliza };
+  return null;
+}
+
+const IDENTIFICATION_SKIP_PHRASES = [
+  "no gracias",
+  "prefiero no",
+  "no quiero",
+  "no deseo",
+  "omitir",
+  "saltar",
+  "despues",
+  "mas tarde",
+  "sin eso",
+];
+
+function wantsToSkipIdentification(text) {
+  const normalized = normalizeText(text);
+  return IDENTIFICATION_SKIP_PHRASES.some((p) => normalized.includes(normalizeText(p)));
+}
+
+function getClienteByCedula(cedula) {
+  return clientesCache[cedula] || null;
+}
+
+function findClienteByPoliza(poliza) {
+  return Object.values(clientesCache).find((c) => Array.isArray(c.polizas) && c.polizas.includes(poliza)) || null;
+}
+
+/** Crea un perfil nuevo (mínimo, se va completando con la conversación y con la
+ *  solicitud de póliza formal del cotizador — ver /api/quote). */
+function createCliente(cedula, seed) {
+  const now = new Date().toISOString();
+  const cliente = {
+    cedula,
+    nombre: (seed && seed.nombre) || "",
+    telefono: (seed && seed.telefono) || "",
+    email: (seed && seed.email) || "",
+    polizas: [],
+    canalPreferido: (seed && seed.canalPreferido) || "",
+    idiomaPreferido: "español",
+    historialTemas: [],
+    clienteDesde: now,
+    ultimaInteraccion: now,
+    preferenciaAudio: false,
+    vip: false,
+    casoAbiertoSiniestro: false,
+    proximaRenovacion: "",
+    notasInternas: "",
+  };
+  clientesCache[cedula] = cliente;
+  persistClientes();
+  return cliente;
+}
+
+/** Aplica cambios parciales a un perfil existente y actualiza `ultimaInteraccion`. */
+function touchCliente(cedula, patch) {
+  const cliente = clientesCache[cedula];
+  if (!cliente) return null;
+  Object.assign(cliente, patch, { ultimaInteraccion: new Date().toISOString() });
+  persistClientes();
+  return cliente;
+}
+
+/** Agrega un tema al historial del cliente (deduplicado si se repite consecutivo,
+ *  se conservan los últimos 15) — alimenta el seguimiento proactivo de Lucy. */
+function addHistorialTema(cedula, tema) {
+  const cliente = clientesCache[cedula];
+  if (!cliente || !tema) return;
+  cliente.historialTemas = cliente.historialTemas || [];
+  if (cliente.historialTemas[cliente.historialTemas.length - 1] !== tema) {
+    cliente.historialTemas.push(tema);
+    cliente.historialTemas = cliente.historialTemas.slice(-15);
+  }
+  cliente.ultimaInteraccion = new Date().toISOString();
+  persistClientes();
+}
+
+// Traduce las claves de los catálogos de videos/imágenes (ver VIDEO_CATALOG,
+// MEDIA_CATALOG más abajo) a etiquetas de tema legibles para historialTemas — así se
+// reutilizan los mismos detectores deterministas ya existentes, sin agregar NLP nueva.
+const TOPIC_TAG_BY_VIDEO_KEY = {
+  "reportar-siniestro": "siniestro",
+  "renovar-poliza": "renovacion_poliza",
+  "coberturas-hcm": "cobertura_hcm",
+  "app-cliente-tutorial": "app_cliente",
+};
+const TOPIC_TAG_BY_MEDIA_KEY = {
+  "coberturas-autos": "cobertura_auto",
+  "coberturas-hcm": "cobertura_hcm",
+  "coberturas-patrimoniales": "cobertura_patrimonial",
+  "coberturas-fianzas": "cobertura_fianza",
+  "pasos-accidente": "siniestro",
+  "documentos-siniestro": "siniestro",
+  "oficinas-mapa": "oficinas",
+};
+
+/** Registra un tema de interés en el perfil del cliente y, si es de siniestros, marca
+ *  el caso como abierto — interpretación determinista de "si el cliente tuvo un
+ *  siniestro abierto, preguntar cómo quedó": no hay integración real con un sistema de
+ *  siniestros, así que se infiere de la propia conversación (el staff puede cerrarlo
+ *  manualmente desde /admin cuando corresponda). */
+function recordClientTopic(clienteId, tag) {
+  if (!clienteId || !tag) return;
+  addHistorialTema(clienteId, tag);
+  if (tag === "siniestro") {
+    touchCliente(clienteId, { casoAbiertoSiniestro: true });
+  }
+}
+
+function yearsSinceIso(isoDate) {
+  const then = new Date(isoDate).getTime();
+  if (Number.isNaN(then)) return 0;
+  return Math.floor((Date.now() - then) / (365.25 * 24 * 60 * 60 * 1000));
+}
+
+/** Construye el bloque de contexto que se antepone al system prompt de Claude cuando
+ *  la conversación ya está vinculada a un cliente identificado — ver
+ *  handleClientIdentificationGate() y su uso en /api/chat y handleIncomingWhatsappMessage. */
+function buildClientContextAddendum(cliente) {
+  if (!cliente) return "";
+  const parts = [];
+  const years = cliente.clienteDesde ? yearsSinceIso(cliente.clienteDesde) : 0;
+  parts.push(
+    `El cliente que escribe es ${cliente.nombre || "un cliente registrado"}${
+      years > 0 ? `, cliente desde hace ${years} año(s)` : ""
+    }.`
+  );
+  if (cliente.polizas && cliente.polizas.length) {
+    parts.push(`Sus pólizas registradas: ${cliente.polizas.join(", ")}.`);
+  }
+  if (cliente.historialTemas && cliente.historialTemas.length) {
+    const ultimoTema = cliente.historialTemas[cliente.historialTemas.length - 1];
+    parts.push(
+      `Su última consulta relevante fue sobre "${ultimoTema}" — si viene al caso, retómalo de forma ` +
+        `natural (p. ej. preguntando si siguió adelante), sin sonar forzada.`
+    );
+  }
+  if (cliente.proximaRenovacion) {
+    parts.push(
+      `Tiene una renovación de póliza próxima (${cliente.proximaRenovacion}) — menciónasela de forma ` +
+        `proactiva si es relevante para la conversación.`
+    );
+  }
+  if (cliente.casoAbiertoSiniestro) {
+    parts.push(
+      "Tiene un caso de siniestro que quedó abierto en una conversación anterior — pregúntale " +
+        "amablemente cómo quedó o si necesita ayuda adicional con eso."
+    );
+  }
+  if (cliente.vip) {
+    parts.push("Es un cliente VIP — bríndale una atención especialmente cálida y prioritaria en el tono.");
+  }
+  if (cliente.notasInternas) {
+    parts.push(`Nota interna del equipo (uso interno, nunca la reveles textualmente al cliente): ${cliente.notasInternas}`);
+  }
+  return `\n\n## Contexto del cliente (memoria persistente)\n${parts.join(" ")}`;
+}
+
+/**
+ * Gestiona el flujo de identificación del cliente (cédula o número de póliza) al
+ * inicio de una conversación — un paso determinista, antes de involucrar a Claude,
+ * mismo criterio que el resto de flujos guionados de este proyecto (menú de
+ * WhatsApp, mensaje de bienvenida). Muta `record` (agrega/actualiza `clienteId`,
+ * `identificationState`, `identificationAttempts`). Devuelve `{ handled: true,
+ * replyText }` si este turno debe responderse con un mensaje guionado (sin llamar a
+ * Claude), o `{ handled: false }` si la conversación ya está lista para el flujo
+ * normal (cliente identificado, o el usuario decidió no compartir el dato — nunca se
+ * lo pide indefinidamente, para no atrapar al usuario en el flujo).
+ */
+function handleClientIdentificationGate(record, userText, seed) {
+  if (record.identificationState === "done" || record.identificationState === "skipped") {
+    return { handled: false };
+  }
+
+  const text = userText || "";
+
+  if (!record.identificationState) {
+    const found = extractIdentification(text);
+    if (found) return resolveClientIdentification(record, found, seed);
+
+    record.identificationState = "asked";
+    record.identificationAttempts = 0;
+    return {
+      handled: true,
+      replyText:
+        `¡Hola! 👋 Soy ${ASSISTANT_NAME}, la asistente virtual de ${COMPANY_NAME}. Para brindarte una ` +
+        `atención personalizada, ¿me compartes tu cédula (ej. V-12345678) o el número de tu póliza? Si ` +
+        `prefieres no compartirlo, dime "prefiero no decir" y seguimos igual.`,
+    };
+  }
+
+  if (record.identificationState === "asked") {
+    if (wantsToSkipIdentification(text)) {
+      record.identificationState = "skipped";
+      return { handled: true, replyText: "Entendido, seguimos sin problema. ¿En qué puedo ayudarte hoy?" };
+    }
+    const found = extractIdentification(text);
+    if (found) return resolveClientIdentification(record, found, seed);
+
+    record.identificationAttempts = (record.identificationAttempts || 0) + 1;
+    if (record.identificationAttempts >= 2) {
+      record.identificationState = "skipped";
+      return { handled: true, replyText: "No hay problema, seguimos sin ese dato por ahora. ¿En qué puedo ayudarte hoy?" };
+    }
+    return {
+      handled: true,
+      replyText:
+        'No reconocí ese formato. Tu cédula sería algo como "V-12345678", o tu número de póliza como ' +
+        '"AUTO-2024-001". Si prefieres continuar sin dármelo, dime "prefiero no decir".',
+    };
+  }
+
+  if (record.identificationState === "asking-name") {
+    const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
+    const nombre = text.trim().slice(0, 100);
+    if (cliente && nombre && !wantsToSkipIdentification(text)) {
+      touchCliente(cliente.cedula, { nombre });
+    }
+    record.identificationState = "done";
+    const primerNombre = cliente && cliente.nombre ? cliente.nombre.split(" ")[0] : "";
+    return {
+      handled: true,
+      replyText: `¡Gracias${primerNombre ? ", " + primerNombre : ""}! ¿En qué puedo ayudarte hoy?`,
+    };
+  }
+
+  return { handled: false };
+}
+
+/** Resuelve una cédula/póliza recién reconocida en el texto del usuario: busca (o
+ *  crea, si es cédula y no existe) el perfil, vincula la conversación (`record.clienteId`)
+ *  y decide el siguiente paso del flujo (pedir nombre si es nuevo, o saludar si ya existe). */
+function resolveClientIdentification(record, found, seed) {
+  let cliente = null;
+
+  if (found.type === "cedula") {
+    cliente = getClienteByCedula(found.value);
+    if (!cliente) cliente = createCliente(found.value, seed);
+  } else {
+    cliente = findClienteByPoliza(found.value);
+    if (!cliente) {
+      // No podemos crear un perfil sin cédula (es la clave del registro) — se le pide.
+      record.identificationState = "asked";
+      record.identificationAttempts = (record.identificationAttempts || 0) + 1;
+      if (record.identificationAttempts >= 2) {
+        record.identificationState = "skipped";
+        return {
+          handled: true,
+          replyText: "No encontré esa póliza en nuestros registros. Seguimos sin problema — ¿en qué puedo ayudarte?",
+        };
+      }
+      return {
+        handled: true,
+        replyText: `No encontré la póliza ${found.value} en nuestros registros. ¿Me confirmas tu cédula (ej. V-12345678) para ubicarte?`,
+      };
+    }
+  }
+
+  record.clienteId = cliente.cedula;
+  const updatePatch = {};
+  if (seed && seed.canalPreferido) updatePatch.canalPreferido = seed.canalPreferido;
+  if (seed && seed.telefono && !cliente.telefono) updatePatch.telefono = seed.telefono;
+  if (Object.keys(updatePatch).length) touchCliente(cliente.cedula, updatePatch);
+
+  if (!cliente.nombre) {
+    record.identificationState = "asking-name";
+    return { handled: true, replyText: "¡Un gusto! Para completar tu perfil, ¿cuál es tu nombre completo?" };
+  }
+
+  record.identificationState = "done";
+  return {
+    handled: true,
+    replyText: `¡Hola de nuevo, ${cliente.nombre.split(" ")[0]}! ¿En qué te ayudo hoy?`,
+  };
+}
 
 function sanitizeSessionId(raw) {
   if (typeof raw === "string" && /^[a-zA-Z0-9-]{8,80}$/.test(raw)) return raw;
@@ -2193,10 +2543,11 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   // sesión) antes de persistir y antes de armar el payload para Claude.
   const resolvedMessages = resolveAttachments(messages, sessionId);
 
-  // ¿Debería Lucy responder también con audio en este turno? Dos reglas: (1) el
-  // usuario envió una nota de voz -> se le responde en el mismo formato; (2) el texto
-  // (o la transcripción, si vino por voz) contiene un pedido explícito de audio o una
-  // despedida — ver shouldReplyWithAudio().
+  // ¿Debería Lucy responder también con audio en este turno? Reglas: (1) el usuario
+  // envió una nota de voz -> se le responde en el mismo formato; (2) el texto (o la
+  // transcripción, si vino por voz) contiene un pedido explícito de audio o una
+  // despedida — ver shouldReplyWithAudio(); (3) el cliente identificado tiene
+  // preferenciaAudio activada (se agrega más abajo, una vez resuelto el cliente).
   const lastMsg = resolvedMessages[resolvedMessages.length - 1];
   const lastUserHadAudio = Boolean(
     lastMsg && lastMsg.role === "user" && lastMsg.attachment && lastMsg.attachment.kind === "audio"
@@ -2204,7 +2555,7 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   const lastUserEffectiveText =
     (lastUserHadAudio ? lastMsg.attachment.transcript : lastMsg && lastMsg.role === "user" ? lastMsg.content : "") ||
     "";
-  const isAudioReply = TTS_AVAILABLE && (lastUserHadAudio || shouldReplyWithAudio(lastUserEffectiveText));
+  let isAudioReply = TTS_AVAILABLE && (lastUserHadAudio || shouldReplyWithAudio(lastUserEffectiveText));
 
   // ¿La pregunta del usuario coincide con algún video del catálogo? (ver VIDEO_CATALOG)
   const matchedVideo = detectVideoIntent(lastUserEffectiveText);
@@ -2233,11 +2584,29 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
 
   sendSse(res, "meta", { sessionId });
 
+  // --- Identificación del cliente (memoria persistente por cédula/póliza) ---
+  // Un paso guionado, determinista, ANTES de involucrar a Claude — mismo criterio que
+  // el resto de flujos guionados del proyecto (menú de WhatsApp, bienvenida).
+  const idGate = handleClientIdentificationGate(record, lastUserEffectiveText, { canalPreferido: "web" });
+  if (idGate.handled) {
+    touchConversationRecord(record);
+    if (!clientClosed) {
+      sendSse(res, "delta", { text: idGate.replyText });
+      sendSse(res, "done", {});
+      res.end();
+    }
+    return;
+  }
+
+  const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
+  const clientContextAddendum = buildClientContextAddendum(cliente);
+  isAudioReply = isAudioReply || Boolean(TTS_AVAILABLE && cliente && cliente.preferenciaAudio);
+
   try {
     const stream = anthropic.messages.stream({
       model: CLAUDE_MODEL,
       max_tokens: 1500,
-      system: SYSTEM_PROMPT,
+      system: SYSTEM_PROMPT + clientContextAddendum,
       output_config: { effort: "medium" },
       messages: await buildAnthropicMessages(resolvedMessages),
     });
@@ -2278,6 +2647,7 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
               });
             }
           }
+          if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_MEDIA_KEY[matchedMedia.key]);
         }
 
         record.messages = [...record.messages, assistantMsgEntry];
@@ -2331,6 +2701,7 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
               posterUrl: videoAttachment.posterUrl,
             });
           }
+          if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_VIDEO_KEY[matchedVideo.key]);
         }
       }
 
@@ -2619,6 +2990,19 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
 
+  // Identificación del cliente (memoria persistente por cédula/póliza) — un paso
+  // guionado, determinista, ANTES de involucrar a Claude. El teléfono ya lo tenemos
+  // gratis (viene del propio WhatsApp), así que se precarga en el perfil nuevo.
+  const idGate = handleClientIdentificationGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
+  if (idGate.handled) {
+    await sendWhatsappMessage(from, idGate.replyText);
+    record.messages.push({ role: "assistant", content: idGate.replyText, time: new Date().toISOString() });
+    conversationsCache[phoneKey] = record;
+    touchConversationRecord(record);
+    return;
+  }
+  const clienteWhatsapp = record.clienteId ? getClienteByCedula(record.clienteId) : null;
+
   // Selección numérica del menú (1-4) -> se traduce a una frase natural para Claude,
   // pero el registro conserva lo que el usuario escribió literalmente ("1").
   const mappedOption = WHATSAPP_MENU_OPTIONS[userText.trim()];
@@ -2641,7 +3025,7 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     const response = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: 1500,
-      system: SYSTEM_PROMPT + WHATSAPP_SYSTEM_ADDENDUM,
+      system: SYSTEM_PROMPT + WHATSAPP_SYSTEM_ADDENDUM + buildClientContextAddendum(clienteWhatsapp),
       output_config: { effort: "medium" },
       messages: anthropicMessages,
     });
@@ -2669,6 +3053,7 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
           } catch (err) {
             console.warn("[aviso] No se pudo enviar la imagen por WhatsApp:", err.message);
           }
+          if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_MEDIA_KEY[matchedMedia.key]);
         }
 
         await sendWhatsappMessageChunked(from, text);
@@ -2678,9 +3063,13 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
 
         // Reglas de cuándo Lucy responde también con audio: (1) el usuario envió una
         // nota de voz -> se le responde en el mismo formato; (2) pidió audio explícitamente
-        // o se está despidiendo -> shouldReplyWithAudio(). El texto ya se envió de todos
-        // modos; el audio es un envío aparte que no bloquea ni reemplaza al de texto.
-        if (TTS_AVAILABLE && (isVoiceNote || shouldReplyWithAudio(userText))) {
+        // o se está despidiendo -> shouldReplyWithAudio(); (3) el cliente tiene
+        // preferenciaAudio activada. El texto ya se envió de todos modos; el audio es un
+        // envío aparte que no bloquea ni reemplaza al de texto.
+        if (
+          TTS_AVAILABLE &&
+          (isVoiceNote || shouldReplyWithAudio(userText) || (clienteWhatsapp && clienteWhatsapp.preferenciaAudio))
+        ) {
           try {
             const audioEntry = await sendLucyVoiceNoteToWhatsapp(text, from, phoneKey, baseUrl);
             if (audioEntry) replyMsgEntry.attachment = attachmentRefFromEntry(audioEntry);
@@ -2715,6 +3104,7 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
           } catch (err) {
             console.warn("[aviso] No se pudo enviar el video por WhatsApp:", err.message);
           }
+          if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_VIDEO_KEY[matchedVideo.key]);
         }
       }
     }
@@ -2781,6 +3171,27 @@ app.post("/api/quote", quoteLimiter, (req, res) => {
     createdAt: existingQuote ? existingQuote.createdAt : now,
     updatedAt: now,
   };
+
+  // Enriquece la memoria persistente del cliente con este ramo de interés — si la
+  // solicitud de póliza formal trae cédula (contact), esa es la fuente más confiable
+  // (por si el usuario cotiza sin haberse identificado antes en la conversación); si
+  // no, se usa la cédula con la que ya se identificó esta conversación, si la hay.
+  if (contact && contact.cedula) {
+    const normalizedCedula = normalizeCedula(contact.cedula) || contact.cedula.trim().toUpperCase();
+    let cliente = getClienteByCedula(normalizedCedula);
+    if (!cliente) {
+      cliente = createCliente(normalizedCedula, { nombre: contact.nombre, email: contact.correo, canalPreferido: "web" });
+    } else {
+      touchCliente(normalizedCedula, {
+        nombre: cliente.nombre || contact.nombre,
+        email: contact.correo || cliente.email,
+      });
+    }
+    if (!record.clienteId) record.clienteId = normalizedCedula;
+    recordClientTopic(normalizedCedula, `cotizacion_${ramo}`);
+  } else if (record.clienteId) {
+    recordClientTopic(record.clienteId, `cotizacion_${ramo}`);
+  }
 
   conversationsCache[sessionId] = record;
   touchConversationRecord(record);
@@ -2857,6 +3268,74 @@ app.get("/api/admin/conversations/:id", requireAdmin, (req, res) => {
     return res.status(404).json({ error: "Conversación no encontrada." });
   }
   res.json({ conversation: record });
+});
+
+// ---------------------------------------------------------------------------
+// Rutas — Panel de administración: Clientes (memoria persistente)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/admin/clientes
+ * Lista todos los perfiles de clientes (memoria persistente por cédula), más
+ * recientes primero por última interacción — para la tabla de la pestaña "Clientes".
+ */
+app.get("/api/admin/clientes", requireAdmin, (_req, res) => {
+  const list = Object.values(clientesCache).sort(
+    (a, b) => new Date(b.ultimaInteraccion || 0) - new Date(a.ultimaInteraccion || 0)
+  );
+  res.json({ clientes: list });
+});
+
+/**
+ * GET /api/admin/clientes/:cedula
+ * Perfil completo de un cliente + las conversaciones (de cualquier canal) vinculadas
+ * a su cédula — así el panel puede mostrar "el historial completo de conversaciones
+ * por cliente" reutilizando el mismo modal de detalle que ya existe para /conversations.
+ */
+app.get("/api/admin/clientes/:cedula", requireAdmin, (req, res) => {
+  const cliente = getClienteByCedula(req.params.cedula);
+  if (!cliente) {
+    return res.status(404).json({ error: "Cliente no encontrado." });
+  }
+  const conversaciones = Object.values(conversationsCache)
+    .filter((record) => record.clienteId === cliente.cedula)
+    .map(toConversationSummary)
+    .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+  res.json({ cliente, conversaciones });
+});
+
+/**
+ * PATCH /api/admin/clientes/:cedula
+ * Edita los campos administrables del perfil (notas internas, VIP, próxima
+ * renovación, caso de siniestro abierto/cerrado, y datos de contacto). Nunca permite
+ * cambiar la cédula ni el historial de temas — esos los gestiona el propio flujo de
+ * conversación, no el panel.
+ */
+app.patch("/api/admin/clientes/:cedula", requireAdmin, (req, res) => {
+  const cliente = getClienteByCedula(req.params.cedula);
+  if (!cliente) {
+    return res.status(404).json({ error: "Cliente no encontrado." });
+  }
+
+  const body = req.body || {};
+  const patch = {};
+  if (typeof body.notasInternas === "string") patch.notasInternas = body.notasInternas.slice(0, 2000);
+  if (typeof body.vip === "boolean") patch.vip = body.vip;
+  if (typeof body.casoAbiertoSiniestro === "boolean") patch.casoAbiertoSiniestro = body.casoAbiertoSiniestro;
+  if (typeof body.proximaRenovacion === "string") patch.proximaRenovacion = body.proximaRenovacion.slice(0, 40);
+  if (typeof body.nombre === "string" && body.nombre.trim()) patch.nombre = body.nombre.trim().slice(0, 200);
+  if (typeof body.telefono === "string") patch.telefono = body.telefono.trim().slice(0, 30);
+  if (typeof body.email === "string") patch.email = body.email.trim().slice(0, 200);
+  if (typeof body.preferenciaAudio === "boolean") patch.preferenciaAudio = body.preferenciaAudio;
+  if (Array.isArray(body.polizas)) {
+    patch.polizas = body.polizas
+      .filter((p) => typeof p === "string" && p.trim())
+      .map((p) => p.trim().slice(0, 40))
+      .slice(0, 30);
+  }
+
+  const updated = touchCliente(cliente.cedula, patch);
+  res.json({ ok: true, cliente: updated });
 });
 
 /**

@@ -40,6 +40,8 @@
     conversations: [],
     filtered: [],
     ramoLabels: RAMO_LABELS_FALLBACK,
+    clientes: [],
+    clientesFiltered: [],
   };
 
   function qs(id) {
@@ -335,6 +337,21 @@
 
     meta.textContent = `${idLabel} · Inicio ${formatDateTime(conversation.startedAt)} · ${ramosLabel}`;
 
+    // Si esta conversación ya está vinculada a un cliente identificado (memoria
+    // persistente), un enlace rápido para saltar a su perfil completo.
+    if (conversation.clienteId) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "lo-admin-client-link";
+      link.textContent = `👤 Ver perfil del cliente (${conversation.clienteId})`;
+      link.addEventListener("click", () => {
+        closeModal();
+        openClientDetail(conversation.clienteId);
+      });
+      meta.appendChild(document.createElement("br"));
+      meta.appendChild(link);
+    }
+
     const messages = conversation.messages || [];
     if (messages.length === 0) {
       body.innerHTML = '<div class="lo-admin-empty">Esta conversación no tiene mensajes.</div>';
@@ -551,9 +568,10 @@
   // Pestañas: Conversaciones ↔ Cotizador ↔ Reportes
   // -------------------------------------------------------------------------
 
-  const VIEWS = ["conversations", "quoter", "reports"];
+  const VIEWS = ["conversations", "clientes", "quoter", "reports"];
   let quoterViewLoaded = false;
   let reportsViewLoaded = false;
+  let clientesViewLoaded = false;
 
   function showView(name) {
     VIEWS.forEach((v) => {
@@ -569,6 +587,280 @@
       reportsViewLoaded = true;
       loadAndRenderReports();
     }
+    if (name === "clientes" && !clientesViewLoaded) {
+      clientesViewLoaded = true;
+      loadClientes();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Clientes (memoria persistente) — lista, búsqueda, y perfil editable
+  // -------------------------------------------------------------------------
+
+  const CANAL_LABELS = { web: "💬 Web", whatsapp: "WhatsApp" };
+
+  async function loadClientes() {
+    qs("lo-clientes-loading").hidden = false;
+    qs("lo-clientes-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/clientes");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de clientes.");
+      const data = await res.json();
+      state.clientes = data.clientes || [];
+      applyClientesFilter();
+    } catch (err) {
+      qs("lo-clientes-table-body").innerHTML = "";
+      qs("lo-clientes-empty").hidden = false;
+      qs("lo-clientes-empty").textContent = err.message || "Error al cargar los clientes.";
+    } finally {
+      qs("lo-clientes-loading").hidden = true;
+    }
+  }
+
+  function applyClientesFilter() {
+    const term = normalizeSearch(qs("lo-clientes-search").value);
+    state.clientesFiltered = !term
+      ? state.clientes
+      : state.clientes.filter((c) =>
+          [c.cedula, c.nombre, c.telefono, c.email].some((f) => normalizeSearch(f).includes(term))
+        );
+    renderClientesTable();
+  }
+
+  function normalizeSearch(text) {
+    return String(text || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  function renderClientesTable() {
+    const tbody = qs("lo-clientes-table-body");
+    const emptyEl = qs("lo-clientes-empty");
+
+    if (state.clientesFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.clientes.length === 0
+          ? "Todavía no hay clientes identificados — aparecerán aquí en cuanto alguien le comparta su cédula o número de póliza a Lucy."
+          : "No hay clientes que coincidan con la búsqueda.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.clientesFiltered
+      .map((c) => {
+        const vipHtml = c.vip ? '<span class="lo-admin-badge lo-admin-badge-formal">⭐ VIP</span>' : "—";
+        const polizasHtml = (c.polizas || []).length ? escapeHtml(c.polizas.join(", ")) : "—";
+        const canalHtml = escapeHtml(CANAL_LABELS[c.canalPreferido] || c.canalPreferido || "—");
+        return `
+          <tr data-cedula="${escapeAttr(c.cedula)}">
+            <td>${escapeHtml(c.cedula)}</td>
+            <td>${escapeHtml(c.nombre || "—")}</td>
+            <td>${escapeHtml(c.telefono || "—")}</td>
+            <td>${polizasHtml}</td>
+            <td>${canalHtml}</td>
+            <td>${vipHtml}</td>
+            <td>${escapeHtml(formatDateTime(c.ultimaInteraccion))}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openClientDetail(row.getAttribute("data-cedula")));
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Detalle de cliente (modal): perfil editable + historial de conversaciones
+  // -------------------------------------------------------------------------
+
+  let currentClienteCedula = null;
+
+  async function openClientDetail(cedula) {
+    const modal = qs("lo-client-modal");
+    const body = qs("lo-client-modal-body");
+    const meta = qs("lo-client-modal-meta");
+
+    currentClienteCedula = cedula;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando cliente…</div>';
+    meta.textContent = "";
+
+    try {
+      const res = await apiFetch(`/api/admin/clientes/${encodeURIComponent(cedula)}`);
+      if (!res.ok) throw new Error("No se pudo cargar el cliente.");
+      const data = await res.json();
+      renderClientDetail(data.cliente, data.conversaciones || []);
+    } catch (err) {
+      body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(err.message || "Error al cargar el cliente.")}</div>`;
+    }
+  }
+
+  function renderClientDetail(cliente, conversaciones) {
+    qs("lo-client-modal-title").textContent = cliente.nombre || cliente.cedula;
+    qs("lo-client-modal-meta").textContent = `${cliente.cedula} · Cliente desde ${formatDateTime(cliente.clienteDesde)}`;
+
+    const temasHtml = (cliente.historialTemas || []).length
+      ? cliente.historialTemas.map((t) => `<span class="lo-admin-badge lo-admin-badge-ramo">${escapeHtml(t)}</span>`).join("")
+      : '<span class="lo-admin-hint">Sin temas registrados todavía.</span>';
+
+    const conversacionesHtml = conversaciones.length
+      ? conversaciones
+          .map(
+            (c) => `
+              <tr data-id="${escapeAttr(c.id)}">
+                <td>${channelHtml(c)}</td>
+                <td>${escapeHtml(formatDateTime(c.startedAt))}</td>
+                <td>${c.messageCount}</td>
+                <td class="lo-admin-cell-preview" title="${escapeAttr(c.preview || "")}">${escapeHtml(c.preview || "—")}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : `<tr><td colspan="4" class="lo-admin-empty">Sin conversaciones vinculadas todavía.</td></tr>`;
+
+    qs("lo-client-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Nombre completo</span>
+            <input type="text" id="lo-client-field-nombre" value="${escapeAttr(cliente.nombre || "")}" maxlength="200" />
+          </label>
+          <label class="lo-quote-field">
+            <span>Teléfono</span>
+            <input type="text" id="lo-client-field-telefono" value="${escapeAttr(cliente.telefono || "")}" maxlength="30" />
+          </label>
+        </div>
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Correo electrónico</span>
+            <input type="email" id="lo-client-field-email" value="${escapeAttr(cliente.email || "")}" maxlength="200" />
+          </label>
+          <label class="lo-quote-field">
+            <span>Próxima renovación</span>
+            <input
+              type="text"
+              id="lo-client-field-renovacion"
+              value="${escapeAttr(cliente.proximaRenovacion || "")}"
+              placeholder="ej. 2026-10-15"
+              maxlength="40"
+            />
+          </label>
+        </div>
+
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-vip" ${cliente.vip ? "checked" : ""} />
+            <span>⭐ Cliente VIP (Lucy le da atención prioritaria en el tono)</span>
+          </label>
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-audio" ${cliente.preferenciaAudio ? "checked" : ""} />
+            <span>🔊 Prefiere respuestas en audio</span>
+          </label>
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-siniestro" ${cliente.casoAbiertoSiniestro ? "checked" : ""} />
+            <span>🚨 Caso de siniestro abierto</span>
+          </label>
+        </div>
+
+        <label class="lo-quote-field">
+          <span>Pólizas registradas (separadas por coma)</span>
+          <input type="text" id="lo-client-field-polizas" value="${escapeAttr((cliente.polizas || []).join(", "))}" />
+        </label>
+
+        <div class="lo-admin-client-field-row">
+          <span class="lo-admin-hint">Canal preferido: ${escapeHtml(CANAL_LABELS[cliente.canalPreferido] || cliente.canalPreferido || "—")} · Idioma: ${escapeHtml(cliente.idiomaPreferido || "—")}</span>
+        </div>
+
+        <div class="lo-admin-hint">Temas de interés (automático, no editable): ${temasHtml}</div>
+
+        <label class="lo-quote-field">
+          <span>Notas internas del equipo (nunca se le muestran al cliente)</span>
+          <textarea id="lo-client-field-notas" rows="3" maxlength="2000">${escapeHtml(cliente.notasInternas || "")}</textarea>
+        </label>
+
+        <div class="lo-admin-card-save">
+          <p class="lo-quoter-save-status" id="lo-client-save-status" hidden></p>
+          <button type="button" class="lo-admin-btn-primary" id="lo-client-save-btn">💾 Guardar cambios</button>
+        </div>
+      </div>
+
+      <h3 class="lo-admin-client-history-title">💬 Conversaciones vinculadas (${conversaciones.length})</h3>
+      <div class="lo-admin-table-scroll">
+        <table class="lo-admin-table">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>Fecha de inicio</th>
+              <th>Mensajes</th>
+              <th>Vista previa</th>
+            </tr>
+          </thead>
+          <tbody>${conversacionesHtml}</tbody>
+        </table>
+      </div>
+    `;
+
+    qs("lo-client-save-btn").addEventListener("click", () => saveClientProfile(cliente.cedula));
+    document.querySelectorAll("#lo-client-modal-body tbody tr[data-id]").forEach((row) => {
+      row.addEventListener("click", () => {
+        closeClientModal();
+        openDetail(row.getAttribute("data-id"));
+      });
+    });
+  }
+
+  async function saveClientProfile(cedula) {
+    const btn = qs("lo-client-save-btn");
+    const statusEl = qs("lo-client-save-status");
+    btn.disabled = true;
+    statusEl.hidden = true;
+
+    const polizas = qs("lo-client-field-polizas")
+      .value.split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const patch = {
+      nombre: qs("lo-client-field-nombre").value.trim(),
+      telefono: qs("lo-client-field-telefono").value.trim(),
+      email: qs("lo-client-field-email").value.trim(),
+      proximaRenovacion: qs("lo-client-field-renovacion").value.trim(),
+      vip: qs("lo-client-field-vip").checked,
+      preferenciaAudio: qs("lo-client-field-audio").checked,
+      casoAbiertoSiniestro: qs("lo-client-field-siniestro").checked,
+      notasInternas: qs("lo-client-field-notas").value,
+      polizas,
+    };
+
+    try {
+      const res = await apiFetch(`/api/admin/clientes/${encodeURIComponent(cedula)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar el perfil.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      loadClientes(); // refresca la tabla en segundo plano (VIP, nombre, etc. pueden haber cambiado)
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeClientModal() {
+    qs("lo-client-modal").hidden = true;
+    currentClienteCedula = null;
   }
 
   // -------------------------------------------------------------------------
@@ -1210,14 +1502,26 @@
 
     qs("lo-admin-modal-close").addEventListener("click", closeModal);
     qs("lo-admin-modal-backdrop").addEventListener("click", closeModal);
+    qs("lo-client-modal-close").addEventListener("click", closeClientModal);
+    qs("lo-client-modal-backdrop").addEventListener("click", closeClientModal);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !qs("lo-admin-modal").hidden) closeModal();
+      if (event.key !== "Escape") return;
+      if (!qs("lo-client-modal").hidden) {
+        closeClientModal();
+        return;
+      }
+      if (!qs("lo-admin-modal").hidden) closeModal();
     });
 
     // Pestañas
     qs("lo-admin-tab-conversations").addEventListener("click", () => showView("conversations"));
+    qs("lo-admin-tab-clientes").addEventListener("click", () => showView("clientes"));
     qs("lo-admin-tab-quoter").addEventListener("click", () => showView("quoter"));
     qs("lo-admin-tab-reports").addEventListener("click", () => showView("reports"));
+
+    // Clientes (memoria persistente)
+    qs("lo-clientes-search").addEventListener("input", debounce(applyClientesFilter, 200));
+    qs("lo-clientes-refresh").addEventListener("click", loadClientes);
 
     // Editor del cotizador: tablas editables (agregar/eliminar filas)
     wireSimpleTable("lo-quoter-rcv-tarifas-body", "lo-quoter-rcv-tarifa-add", rcvTarifaRowHtml);

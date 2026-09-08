@@ -79,6 +79,7 @@
           <button type="button" class="lo-admin-tab lo-admin-tab-active" id="lo-admin-tab-conversations">
             💬 Conversaciones
           </button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-clientes">👤 Clientes</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-quoter">⚙️ Cotizador</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-reports">📊 Reportes</button>
         </nav>
@@ -166,6 +167,55 @@
           <div class="lo-admin-loading" id="lo-admin-loading">Cargando conversaciones…</div>
           <div class="lo-admin-empty" id="lo-admin-empty" hidden>
             No hay conversaciones que coincidan con la búsqueda o los filtros.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: clientes (memoria persistente) ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-clientes" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Memoria persistente de clientes</strong>
+          <p>
+            Perfiles que Lucy va construyendo cuando un cliente se identifica con su cédula o número de
+            póliza (web o WhatsApp) — nombre, pólizas, temas de interés, y preferencias, para que Lucy lo
+            reconozca en su próxima conversación sin importar el canal.
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-clientes-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar por cédula, nombre o teléfono..."
+          />
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-clientes-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Cédula</th>
+                  <th>Nombre</th>
+                  <th>Teléfono</th>
+                  <th>Pólizas</th>
+                  <th>Canal preferido</th>
+                  <th>VIP</th>
+                  <th>Última interacción</th>
+                </tr>
+              </thead>
+              <tbody id="lo-clientes-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-clientes-loading">Cargando clientes…</div>
+          <div class="lo-admin-empty" id="lo-clientes-empty" hidden>
+            Todavía no hay clientes identificados — aparecerán aquí en cuanto alguien le comparta su cédula
+            o número de póliza a Lucy.
           </div>
         </section>
       </main>
@@ -467,6 +517,23 @@
         </button>
       </div>
       <div class="lo-admin-modal-body lo-chat-body" id="lo-admin-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: perfil del cliente (memoria persistente) ================= -->
+  <div id="lo-client-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-client-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Perfil del cliente">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title" id="lo-client-modal-title">Cliente</div>
+          <div class="lo-admin-modal-meta" id="lo-client-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-client-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-client-modal-body"></div>
     </div>
   </div>
 

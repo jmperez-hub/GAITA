@@ -891,6 +891,55 @@ select {
   opacity: 0.75;
 }
 
+/* Perfil de cliente (memoria persistente) — modal en la pestaña "Clientes" */
+
+.lo-admin-client-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.lo-admin-client-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.lo-admin-client-field-row .lo-quote-field {
+  flex: 1;
+  min-width: 180px;
+}
+
+.lo-admin-client-history-title {
+  margin: 4px 20px 10px;
+  font-size: 14px;
+}
+
+.lo-admin-client-profile ~ .lo-admin-table-scroll,
+#lo-client-modal-body .lo-admin-table-scroll {
+  margin: 0 20px 16px;
+}
+
+/* Enlace desde el detalle de una conversación hacia el perfil del cliente vinculado */
+.lo-admin-client-link {
+  display: inline-block;
+  margin-top: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lo-verde);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.lo-admin-client-link:hover {
+  color: var(--lo-verde-claro);
+}
+
 @media (max-width: 900px) {
   .lo-report-charts-grid {
     grid-template-columns: 1fr;

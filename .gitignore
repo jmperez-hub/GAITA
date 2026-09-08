@@ -10,3 +10,11 @@ conversations.json
 # Archivos adjuntos por los usuarios (fotos de siniestros, documentos con datos
 # personales) y su índice — información sensible, no versionar.
 /uploads/
+
+# Perfiles de clientes (memoria persistente: cédula, teléfono, correo, notas
+# internas) — información sensible, no versionar.
+/data/
+
+# Estado interno de la sesión de Claude Code (lock de tareas programadas) — no es
+# parte del proyecto, no versionar.
+.claude/scheduled_tasks.lock

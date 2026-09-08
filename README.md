@@ -30,6 +30,8 @@ mediante Server-Sent Events (SSE). Lucy, la misma asistente, también responde p
 │                           #   genera Lucy, videos comprimidos y THUMBS para WhatsApp — se crea
 │                           #   solo (ver "Adjuntos", "Videos" e "Imágenes" más abajo); no versionar
 ├── conversations.json      # Conversaciones y cotizaciones guardadas (se crea solo; no versionar)
+├── data/clientes.json      # Memoria persistente de clientes, por cédula — se crea solo (ver
+│                           #   "Memoria persistente de clientes" más abajo); no versionar
 ├── quoter-config.json      # Configuración del cotizador (tarifas, tasas, textos) — editable
 │                           #   desde /admin sin tocar código
 ├── server.js             # Backend Express: API de Anthropic + API del panel admin +
@@ -130,6 +132,7 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `ADMIN_SESSION_TTL_MS`      | Duración de la sesión del panel, en milisegundos                              | `28800000` (8 h)           |
 | `CONVERSATIONS_FILE`        | Ruta del archivo JSON donde se guardan las conversaciones                     | `conversations.json`        |
 | `QUOTER_CONFIG_FILE`        | Ruta del archivo JSON de configuración del cotizador                          | `quoter-config.json`        |
+| `CLIENTES_FILE`             | Ruta del archivo JSON de memoria persistente de clientes (por cédula)         | `data/clientes.json`        |
 | `UPLOADS_DIR`               | Carpeta donde se guardan las fotos/documentos/notas de voz adjuntos           | `uploads`                   |
 | `MAX_UPLOAD_SIZE_MB`        | Tamaño máximo por archivo adjunto, en MB                                      | `5`                         |
 | `OPENAI_API_KEY`            | Clave de OpenAI para transcribir notas de voz (Whisper) y, como respaldo, para que Lucy responda en audio (OpenAI TTS) | — |
@@ -233,6 +236,82 @@ los equipos de TI, técnico o comercial pueden, sin escribir una línea de códi
 Los cambios se guardan con el botón "💾 Guardar todos los cambios" y quedan
 disponibles en el chat de inmediato (sin reiniciar el servidor).
 
+## Memoria persistente de clientes
+
+Lucy puede recordar a un cliente **entre conversaciones y entre canales** (web y
+WhatsApp) — no solo dentro de una misma sesión. El perfil vive en `data/clientes.json`
+(`Record<cédula, perfil>`, mismo patrón de caché + escritura serializada que
+`conversations.json`), separado de cualquier conversación individual.
+
+**Identificación (al inicio de la conversación):** un paso guionado y determinista —
+Lucy pregunta la cédula o el número de póliza *antes* de involucrar a Claude (igual
+criterio que el menú de WhatsApp o el mensaje de bienvenida: nunca se deja en manos
+del modelo). Si el dato coincide con un cliente ya conocido, saluda con
+"¡Hola de nuevo, [nombre]!"; si es nuevo, crea el perfil y pide el nombre. El usuario
+puede decir "prefiero no decir" (o fallar el formato dos veces) para seguir sin
+identificarse — nunca queda atrapado en el flujo.
+
+**Qué recuerda** (según el ejemplo del perfil que compartiste, con nombres de campo en
+`camelCase` para ser consistente con el resto del código):
+
+```json
+{
+  "cedula": "V-12345678",
+  "nombre": "Carlos Pérez",
+  "telefono": "+584141234567",
+  "email": "carlos@email.com",
+  "polizas": ["AUTO-2024-001", "HCM-2023-045"],
+  "canalPreferido": "whatsapp",
+  "idiomaPreferido": "español",
+  "historialTemas": ["cotizacion_autos", "siniestro"],
+  "clienteDesde": "2024-03-10T14:30:00.000Z",
+  "ultimaInteraccion": "2026-09-01T14:30:00.000Z",
+  "preferenciaAudio": true,
+  "vip": false,
+  "casoAbiertoSiniestro": false,
+  "proximaRenovacion": "",
+  "notasInternas": "Cliente VIP, renovación pendiente en octubre"
+}
+```
+
+**Personalización activa:**
+
+- **Preferencia de audio** — si `preferenciaAudio` es `true`, Lucy responde con nota
+  de voz por defecto (se suma a las reglas ya existentes de
+  [Respuestas de Lucy en audio](#respuestas-de-lucy-en-audio-texto-a-voz)).
+- **Cliente VIP** — el system prompt le indica a Lucy que le dé un tono
+  especialmente cálido y prioritario (se activa desde `/admin`, ver más abajo).
+- **Caso de siniestro abierto** — se marca solo cuando el catálogo de video/imagen
+  detecta un tema de siniestro (`recordClientTopic`); Lucy le pregunta al cliente
+  cómo quedó. El staff lo cierra manualmente desde `/admin` una vez resuelto — no hay
+  integración real con un sistema de siniestros, es una inferencia de la propia
+  conversación.
+- **Seguimiento del ramo de interés** — cada cotización guardada (`POST /api/quote`)
+  agrega un tema (`cotizacion_<ramo>`) a `historialTemas`; el system prompt le pide a
+  Lucy retomarlo de forma natural en la siguiente conversación.
+- **Próxima renovación** — campo editable solo desde `/admin` (no hay integración
+  real con pólizas/fechas de vencimiento); si tiene un valor, Lucy lo menciona de
+  forma proactiva.
+
+**Contexto en cada mensaje:** una vez identificado el cliente, su perfil se resume y
+se antepone al `system` prompt de Claude en cada turno (`buildClientContextAddendum`)
+— nombre, antigüedad como cliente, pólizas, último tema, VIP, caso abierto, próxima
+renovación y notas internas (marcadas explícitamente como "nunca reveles esto
+textualmente al cliente").
+
+> **Nota de diseño:** el pedido original pedía preguntar la cédula "al inicio del
+> chat" — se implementó como un paso guionado por palabras clave (regex para cédula
+> venezolana `V-12345678` / póliza `RAMO-AAAA-NNN`), el mismo mecanismo determinista
+> que ya usan el cotizador, el menú de WhatsApp y los catálogos de video/imagen —
+> nunca depende de que el modelo decida cuándo preguntar o qué extraer.
+
+Desde la pestaña **"👤 Clientes"** del panel `/admin` se puede: buscar por cédula,
+nombre o teléfono; ver y editar el perfil completo (nombre, teléfono, correo, pólizas,
+próxima renovación, notas internas); marcar/desmarcar VIP, preferencia de audio y caso
+de siniestro abierto; y ver — con un clic — el historial completo de conversaciones de
+ese cliente (abre el mismo modal de detalle que la pestaña "Conversaciones", con un
+enlace de vuelta al perfil del cliente desde ahí).
+
 ## Panel de administración (`/admin`)
 
 Con el servidor corriendo, entra a:
@@ -260,6 +339,10 @@ intencional, para que el panel nunca quede accesible con una contraseña vacía.
 - **Exportar CSV** — botón "⬇ Exportar CSV" que descarga todas las conversaciones
   guardadas (fecha, duración, mensajes, ramos, cotizaciones, si pidió asesor y una
   vista previa).
+- **Pestaña "👤 Clientes"** — memoria persistente de clientes identificados (ver
+  sección [Memoria persistente de clientes](#memoria-persistente-de-clientes) más
+  abajo): lista, perfil editable (VIP, notas internas, próxima renovación, etc.) y
+  el historial completo de conversaciones de cada uno, sin importar el canal.
 - **Pestaña "⚙️ Cotizador"** — editor no-code de las tarifas, tasas y textos del
   cotizador automático (ver sección anterior).
 - **Pestaña "📊 Reportes"** — dashboard de métricas y gráficos (ver sección
