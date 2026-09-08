@@ -1,0 +1,560 @@
+{
+  "updatedAt": "2026-09-08T14:21:25.561Z",
+  "general": {
+    "introMessage": "¡Claro que sí! 😊 Puedo ayudarte a cotizar. ¿Qué tipo de seguro te gustaría cotizar?",
+    "disclaimer": "Este es un estimado referencial sujeto a evaluación de riesgo. La emisión final de la póliza está sujeta a la aceptación de suscripción de La Occidental C.A. de Seguros y a la verificación de los datos suministrados.",
+    "triggerKeywords": [
+      "cotiz",
+      "cuanto cuesta",
+      "cuánto cuesta",
+      "cuanto sale",
+      "cuánto sale",
+      "cuanto vale",
+      "cuánto vale",
+      "precio del seguro",
+      "precio de mi seguro",
+      "que precio tiene"
+    ]
+  },
+  "rcv": {
+    "enabled": true,
+    "label": "Automóviles (RCV)",
+    "currencyLabel": "USD (TCR)",
+    "currencyNote": "Montos expresados en la unidad de referencia TCR del Banco Central de Venezuela (equivalente al tipo de cambio oficial de mayor valor vigente el día de la emisión).",
+    "minYear": 1990,
+    "marcasComunes": [
+      "Toyota",
+      "Chevrolet",
+      "Ford",
+      "Jeep",
+      "Fiat",
+      "Hyundai",
+      "Kia",
+      "Nissan",
+      "Renault",
+      "Volkswagen",
+      "Mitsubishi",
+      "Chery",
+      "JAC",
+      "Otra"
+    ],
+    "placaOptions": [
+      {
+        "id": "nacional",
+        "label": "Nacional"
+      },
+      {
+        "id": "extranjera",
+        "label": "Extranjera"
+      }
+    ],
+    "usoOptions": [
+      {
+        "id": "conLucro",
+        "label": "Con fines de lucro (transporte público / comercial)"
+      },
+      {
+        "id": "sinLucro",
+        "label": "Sin fines de lucro (particular, escolar, turismo, empresarial)"
+      }
+    ],
+    "rebajaSinLucroPct": 40,
+    "recargos": [
+      {
+        "id": "materiasPeligrosas",
+        "label": "Transporta materias inflamables, corrosivas, tóxicas o explosivas",
+        "pct": 100,
+        "enabled": true
+      },
+      {
+        "id": "vehiculoOficial",
+        "label": "Vehículo policial, de bomberos, ambulancia, vigilancia o transporte de valores",
+        "pct": 60,
+        "enabled": true
+      },
+      {
+        "id": "remolqueOcasional",
+        "label": "Remolca ocasional o habitualmente lanchas, motos, casas rodantes u otros aparejos",
+        "pct": 20,
+        "enabled": true
+      }
+    ],
+    "tarifas": [
+      {
+        "id": "particular-liviano",
+        "label": "Automóvil o camioneta particular (hasta 800 kg)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 2505,
+          "prima": 33
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 12523,
+          "prima": 120
+        }
+      },
+      {
+        "id": "particular-pesado",
+        "label": "Automóvil o camioneta particular (más de 800 kg)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 2505,
+          "prima": 39
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 12523,
+          "prima": 142
+        }
+      },
+      {
+        "id": "casa-movil",
+        "label": "Casa móvil con tracción propia",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 2505,
+          "prima": 39
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 12523,
+          "prima": 142
+        }
+      },
+      {
+        "id": "auto-escuela",
+        "label": "Vehículo de auto-escuela",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2252,
+          "personas": 3315,
+          "prima": 45
+        },
+        "extranjera": {
+          "cosas": 11261,
+          "personas": 16577,
+          "prima": 164
+        }
+      },
+      {
+        "id": "alquiler-sin-chofer",
+        "label": "Alquiler sin chofer",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2252,
+          "personas": 3315,
+          "prima": 102
+        },
+        "extranjera": {
+          "cosas": 11261,
+          "personas": 16577,
+          "prima": 371
+        }
+      },
+      {
+        "id": "taxi-alquiler-chofer",
+        "label": "Taxi / alquiler con chofer / por puesto",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2252,
+          "personas": 3315,
+          "prima": 114
+        },
+        "extranjera": {
+          "cosas": 11261,
+          "personas": 16577,
+          "prima": 415
+        }
+      },
+      {
+        "id": "carga-2tm",
+        "label": "Vehículo de carga — hasta 2 TM",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 1877,
+          "personas": 2505,
+          "prima": 45
+        },
+        "extranjera": {
+          "cosas": 9384,
+          "personas": 12523,
+          "prima": 164
+        }
+      },
+      {
+        "id": "carga-2-5tm",
+        "label": "Vehículo de carga — más de 2 hasta 5 TM",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2192,
+          "personas": 3315,
+          "prima": 84
+        },
+        "extranjera": {
+          "cosas": 10961,
+          "personas": 16577,
+          "prima": 306
+        }
+      },
+      {
+        "id": "carga-5-8tm",
+        "label": "Vehículo de carga — más de 5 hasta 8 TM",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2312,
+          "personas": 3441,
+          "prima": 84
+        },
+        "extranjera": {
+          "cosas": 11562,
+          "personas": 17207,
+          "prima": 306
+        }
+      },
+      {
+        "id": "carga-8-12tm",
+        "label": "Vehículo de carga — más de 8 hasta 12 TM",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2595,
+          "personas": 4378,
+          "prima": 108
+        },
+        "extranjera": {
+          "cosas": 12973,
+          "personas": 21892,
+          "prima": 393
+        }
+      },
+      {
+        "id": "carga-12tm",
+        "label": "Vehículo de carga — más de 12 TM (recargo adicional por TM excedente: consultar asesor)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2595,
+          "personas": 4378,
+          "prima": 108
+        },
+        "extranjera": {
+          "cosas": 12973,
+          "personas": 21892,
+          "prima": 393
+        }
+      },
+      {
+        "id": "autobus-urbano",
+        "label": "Autobús urbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 1502,
+          "personas": 2817,
+          "prima": 114
+        },
+        "extranjera": {
+          "cosas": 7508,
+          "personas": 14084,
+          "prima": 415
+        }
+      },
+      {
+        "id": "autobus-suburbano",
+        "label": "Autobús suburbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 1502,
+          "personas": 2817,
+          "prima": 114
+        },
+        "extranjera": {
+          "cosas": 7508,
+          "personas": 14084,
+          "prima": 415
+        }
+      },
+      {
+        "id": "autobus-interurbano",
+        "label": "Autobús interurbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 3754,
+          "prima": 258
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 18769,
+          "prima": 939
+        }
+      },
+      {
+        "id": "minibus-urbano",
+        "label": "Minibús urbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 1502,
+          "personas": 2817,
+          "prima": 75
+        },
+        "extranjera": {
+          "cosas": 7508,
+          "personas": 14084,
+          "prima": 273
+        }
+      },
+      {
+        "id": "minibus-suburbano",
+        "label": "Minibús suburbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 1502,
+          "personas": 2817,
+          "prima": 75
+        },
+        "extranjera": {
+          "cosas": 7508,
+          "personas": 14084,
+          "prima": 273
+        }
+      },
+      {
+        "id": "minibus-interurbano",
+        "label": "Minibús interurbano",
+        "aplicaRebajaSinLucro": true,
+        "nacional": {
+          "cosas": 2505,
+          "personas": 3754,
+          "prima": 168
+        },
+        "extranjera": {
+          "cosas": 12523,
+          "personas": 18769,
+          "prima": 611
+        }
+      },
+      {
+        "id": "rutas-foraneas",
+        "label": "Vehículo de rutas foráneas (sin límite de pasajeros)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 1874,
+          "personas": 2817,
+          "prima": 75
+        },
+        "extranjera": {
+          "cosas": 9369,
+          "personas": 14084,
+          "prima": 273
+        }
+      },
+      {
+        "id": "rustico-doble-traccion",
+        "label": "Vehículo rústico de doble tracción (hasta 15 pasajeros)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 1874,
+          "personas": 2817,
+          "prima": 75
+        },
+        "extranjera": {
+          "cosas": 9369,
+          "personas": 14084,
+          "prima": 273
+        }
+      },
+      {
+        "id": "motocicleta",
+        "label": "Motocicleta",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 2505,
+          "prima": 15
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 12523,
+          "prima": 55
+        }
+      },
+      {
+        "id": "moto-carro",
+        "label": "Moto-carro (carga hasta 750 kg)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 1874,
+          "personas": 2505,
+          "prima": 21
+        },
+        "extranjera": {
+          "cosas": 9369,
+          "personas": 12523,
+          "prima": 76
+        }
+      },
+      {
+        "id": "traccion-sangre",
+        "label": "Tracción de sangre (personal o animal, con o sin lucro)",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 210,
+          "personas": 375,
+          "prima": 12
+        },
+        "extranjera": {
+          "cosas": 1051,
+          "personas": 1877,
+          "prima": 44
+        }
+      },
+      {
+        "id": "otras-maquinas",
+        "label": "Otras máquinas móviles",
+        "aplicaRebajaSinLucro": false,
+        "nacional": {
+          "cosas": 2000,
+          "personas": 2505,
+          "prima": 30
+        },
+        "extranjera": {
+          "cosas": 10000,
+          "personas": 12523,
+          "prima": 109
+        }
+      }
+    ]
+  },
+  "hcm": {
+    "enabled": true,
+    "label": "HCM (Hospitalización y Cirugía)",
+    "currencyLabel": "USD",
+    "maxAge": 65,
+    "maxBeneficiarios": 8,
+    "sumasAseguradas": [
+      {
+        "id": "10000",
+        "label": "USD 10.000",
+        "value": 10000
+      },
+      {
+        "id": "20000",
+        "label": "USD 20.000",
+        "value": 20000
+      },
+      {
+        "id": "50000",
+        "label": "USD 50.000",
+        "value": 50000
+      },
+      {
+        "id": "100000",
+        "label": "USD 100.000",
+        "value": 100000
+      }
+    ],
+    "rangosEdad": [
+      {
+        "id": "0-9",
+        "label": "0 a 9 años",
+        "min": 0,
+        "max": 9,
+        "rates": {
+          "10000": 464,
+          "20000": 522,
+          "50000": 580,
+          "100000": 664
+        }
+      },
+      {
+        "id": "10-19",
+        "label": "10 a 19 años",
+        "min": 10,
+        "max": 19,
+        "rates": {
+          "10000": 456,
+          "20000": 513,
+          "50000": 570,
+          "100000": 653
+        }
+      },
+      {
+        "id": "20-29",
+        "label": "20 a 29 años",
+        "min": 20,
+        "max": 29,
+        "rates": {
+          "10000": 715,
+          "20000": 782,
+          "50000": 841,
+          "100000": 963
+        }
+      },
+      {
+        "id": "30-39",
+        "label": "30 a 39 años",
+        "min": 30,
+        "max": 39,
+        "rates": {
+          "10000": 764,
+          "20000": 836,
+          "50000": 899,
+          "100000": 1029
+        }
+      },
+      {
+        "id": "40-49",
+        "label": "40 a 49 años",
+        "min": 40,
+        "max": 49,
+        "rates": {
+          "10000": 821,
+          "20000": 899,
+          "50000": 966,
+          "100000": 1106
+        }
+      },
+      {
+        "id": "50-59",
+        "label": "50 a 59 años",
+        "min": 50,
+        "max": 59,
+        "rates": {
+          "10000": 984,
+          "20000": 1076,
+          "50000": 1158,
+          "100000": 1326
+        }
+      },
+      {
+        "id": "60-65",
+        "label": "60 a 65 años",
+        "min": 60,
+        "max": 65,
+        "rates": {
+          "10000": 1161,
+          "20000": 1270,
+          "50000": 1366,
+          "100000": 1564
+        }
+      }
+    ]
+  },
+  "patrimoniales": {
+    "enabled": true,
+    "label": "Patrimoniales (Incendio/Robo)",
+    "tiposBien": [
+      {
+        "id": "vivienda",
+        "label": "Vivienda"
+      },
+      {
+        "id": "comercio",
+        "label": "Comercio / Local comercial"
+      }
+    ],
+    "mensajeEnvio": "Tu cotización fue enviada a nuestro equipo comercial. Un asesor se pondrá en contacto contigo a través del correo que nos indicaste para continuar con el proceso."
+  }
+}

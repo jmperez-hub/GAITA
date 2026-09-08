@@ -1,0 +1,1556 @@
+/*
+ * chatbot.css
+ * Estilos del widget de chat flotante "Lucy" — La Occidental C.A. de Seguros.
+ * Paleta de marca: verde #00bf63, verde claro #37ce48, amarillo #fce809,
+ * grises #7f8083 / #a6a6a6. Tipografía: Poppins.
+ */
+
+:root {
+  --lo-verde: #00bf63;
+  --lo-verde-claro: #37ce48;
+  --lo-amarillo: #fce809;
+  --lo-gris-oscuro: #7f8083;
+  --lo-gris-claro: #a6a6a6;
+  --lo-blanco: #ffffff;
+  --lo-negro-texto: #1f2421;
+  --lo-fondo-chat: #f7f9f8;
+  --lo-fondo-burbuja-bot: #ffffff;
+  --lo-borde: #e7eae8;
+  --lo-radius: 18px;
+  --lo-sombra: 0 16px 40px rgba(15, 40, 26, 0.2);
+  --lo-sombra-launcher: 0 10px 26px rgba(0, 191, 99, 0.38);
+  --lo-font: "Poppins", "Segoe UI", Arial, sans-serif;
+  --lo-ease-soft: cubic-bezier(0.34, 1.15, 0.64, 1);
+
+  /* Grabación de voz — mismos tonos rojos que .lo-msg-error, para consistencia */
+  --lo-rec-bg: #fdeaea;
+  --lo-rec-border: #f3c9c9;
+  --lo-rec-text: #9a2f2f;
+  --lo-rec-accent: #e6453b;
+}
+
+/* Utilidad: contenido accesible solo para lectores de pantalla (nunca visible) */
+.lo-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+#lo-chatbot-root {
+  font-family: var(--lo-font);
+  position: fixed;
+  z-index: 999999;
+  bottom: 24px;
+  right: 24px;
+  line-height: 1.4;
+}
+
+#lo-chatbot-root *,
+#lo-chatbot-root *::before,
+#lo-chatbot-root *::after {
+  box-sizing: border-box;
+}
+
+/* Los elementos con [hidden] deben quedar ocultos SIEMPRE, sin importar qué otra
+   regla de "display" les aplique más abajo (p. ej. .lo-quote-field usa flex). */
+#lo-chatbot-root [hidden] {
+  display: none !important;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Botón flotante (launcher)                                               */
+/* ---------------------------------------------------------------------- */
+
+.lo-chat-launcher {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  box-shadow: var(--lo-sombra-launcher);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  transition: transform 0.25s var(--lo-ease-soft), box-shadow 0.25s ease;
+}
+
+.lo-chat-launcher:hover {
+  transform: translateY(-2px) scale(1.05);
+  box-shadow: 0 14px 32px rgba(0, 191, 99, 0.46);
+}
+
+.lo-chat-launcher:active {
+  transform: scale(0.95);
+}
+
+.lo-launcher-icon {
+  position: absolute;
+  transition: opacity 0.2s ease, transform 0.3s var(--lo-ease-soft);
+}
+
+/* Ícono de cierre (X) */
+.lo-chat-launcher svg.lo-launcher-icon {
+  width: 26px;
+  height: 26px;
+  fill: var(--lo-blanco);
+}
+
+.lo-chat-launcher .lo-icon-close {
+  opacity: 0;
+  transform: rotate(-90deg) scale(0.5);
+}
+
+/* Foto de Lucy en el botón flotante (estado cerrado) */
+.lo-chat-launcher .lo-icon-chat {
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: var(--lo-blanco);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transform: rotate(0) scale(1);
+}
+
+.lo-chat-launcher .lo-icon-chat svg {
+  width: 30px;
+  height: 30px;
+  fill: var(--lo-verde);
+}
+
+.lo-chat-launcher .lo-icon-chat img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+#lo-chatbot-root.lo-open .lo-chat-launcher .lo-icon-chat {
+  opacity: 0;
+  transform: rotate(90deg) scale(0.5);
+}
+
+#lo-chatbot-root.lo-open .lo-chat-launcher .lo-icon-close {
+  opacity: 1;
+  transform: rotate(0) scale(1);
+}
+
+.lo-chat-badge {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--lo-amarillo);
+  color: #4a4200;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid var(--lo-blanco);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+
+#lo-chatbot-root.lo-open .lo-chat-badge {
+  opacity: 0;
+  transform: scale(0);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Ventana del chat                                                        */
+/* ---------------------------------------------------------------------- */
+
+.lo-chat-window {
+  position: absolute;
+  bottom: 78px;
+  right: 0;
+  width: 380px;
+  max-width: calc(100vw - 32px);
+  height: 600px;
+  max-height: calc(100vh - 120px);
+  background: var(--lo-fondo-chat);
+  border-radius: var(--lo-radius);
+  box-shadow: var(--lo-sombra);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+
+  /* Estado cerrado: invisible, sin interacción, pero permite animar el cierre */
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform-origin: bottom right;
+  transform: translateY(20px) scale(0.92);
+  transition: opacity 0.24s ease, transform 0.28s var(--lo-ease-soft),
+    visibility 0s linear 0.28s;
+}
+
+#lo-chatbot-root.lo-open .lo-chat-window {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+  transition: opacity 0.24s ease, transform 0.28s var(--lo-ease-soft),
+    visibility 0s linear 0s;
+}
+
+/* Encabezado */
+
+.lo-chat-header {
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  padding: 14px 14px 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+/* Avatar circular de Lucy (encabezado) */
+
+.lo-avatar {
+  border-radius: 50%;
+  background: var(--lo-blanco);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Ícono de respaldo (se ve mientras carga la foto, o si la foto no está disponible) */
+.lo-avatar svg {
+  fill: var(--lo-verde);
+}
+
+/* Foto real de Lucy: cubre el ícono de respaldo una vez cargada */
+.lo-avatar img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.lo-avatar-lg {
+  width: 72px;
+  height: 72px;
+}
+
+.lo-avatar-lg svg {
+  width: 40px;
+  height: 40px;
+}
+
+.lo-avatar-md {
+  width: 42px;
+  height: 42px;
+}
+
+.lo-avatar-md svg {
+  width: 24px;
+  height: 24px;
+}
+
+.lo-avatar-sm {
+  width: 26px;
+  height: 26px;
+}
+
+.lo-avatar-sm svg {
+  width: 15px;
+  height: 15px;
+}
+
+.lo-avatar-status {
+  position: absolute;
+  bottom: -1px;
+  right: -1px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--lo-amarillo);
+  border: 2px solid var(--lo-verde-claro);
+}
+
+.lo-chat-header-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.lo-chat-header-title {
+  font-weight: 600;
+  font-size: 15.5px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lo-chat-header-subtitle {
+  font-size: 11.5px;
+  opacity: 0.92;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lo-chat-header-subtitle .lo-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lo-amarillo);
+  display: inline-block;
+  flex-shrink: 0;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.25);
+}
+
+.lo-chat-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.lo-chat-header-btn {
+  background: rgba(255, 255, 255, 0.16);
+  border: none;
+  color: var(--lo-blanco);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-chat-header-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.05);
+}
+
+.lo-chat-header-btn:active {
+  transform: scale(0.94);
+}
+
+.lo-chat-header-btn svg {
+  width: 13px;
+  height: 13px;
+  fill: var(--lo-blanco);
+}
+
+/* Cuerpo de mensajes */
+
+.lo-chat-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: var(--lo-fondo-chat);
+  scroll-behavior: smooth;
+}
+
+.lo-chat-body::-webkit-scrollbar {
+  width: 6px;
+}
+
+.lo-chat-body::-webkit-scrollbar-thumb {
+  background: var(--lo-gris-claro);
+  border-radius: 3px;
+}
+
+.lo-msg-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  max-width: 100%;
+  animation: lo-fade-in 0.22s ease;
+}
+
+@keyframes lo-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.lo-row-bot {
+  align-self: flex-start;
+  justify-content: flex-start;
+}
+
+.lo-row-user {
+  align-self: flex-end;
+  justify-content: flex-end;
+}
+
+.lo-msg-col {
+  display: flex;
+  flex-direction: column;
+  max-width: 78%;
+  min-width: 0;
+}
+
+.lo-row-user .lo-msg-col {
+  align-items: flex-end;
+}
+
+.lo-row-bot .lo-msg-col {
+  align-items: flex-start;
+}
+
+.lo-msg {
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.lo-msg-user {
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  border-bottom-right-radius: 4px;
+}
+
+.lo-msg-bot {
+  background: var(--lo-fondo-burbuja-bot);
+  color: var(--lo-negro-texto);
+  border: 1px solid var(--lo-borde);
+  border-bottom-left-radius: 4px;
+}
+
+.lo-msg-error {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+  border-bottom-left-radius: 4px;
+}
+
+.lo-msg-time {
+  font-size: 10.5px;
+  color: var(--lo-gris-claro);
+  margin-top: 4px;
+  padding: 0 4px;
+}
+
+/* Adjunto (imagen o documento) dentro de una burbuja de mensaje */
+
+.lo-msg-attachment {
+  display: block;
+  margin-bottom: 4px;
+  border-radius: 14px;
+  overflow: hidden;
+  text-decoration: none;
+  max-width: 220px;
+  border: 1px solid var(--lo-borde);
+  transition: opacity 0.15s ease;
+}
+
+.lo-msg-attachment:hover {
+  opacity: 0.9;
+}
+
+.lo-msg-attachment img {
+  display: block;
+  width: 100%;
+  max-height: 220px;
+  object-fit: cover;
+}
+
+.lo-msg-attachment-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--lo-blanco);
+  padding: 8px 12px;
+}
+
+.lo-msg-attachment-icon {
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.lo-msg-attachment-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lo-verde);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Video explicativo de Lucy (catálogo de videos) dentro de una burbuja de mensaje */
+
+.lo-msg-video-wrap {
+  margin-bottom: 4px;
+  max-width: 280px;
+}
+
+.lo-msg-video {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  max-height: 200px;
+  border-radius: 14px;
+  border: 1px solid var(--lo-borde);
+  background: #000;
+  object-fit: contain;
+}
+
+/* Imagen/infografía de Lucy (catálogo de material visual) dentro de una burbuja de
+   mensaje — clic para abrir en lightbox (overlay de pantalla completa). */
+
+.lo-msg-media-wrap {
+  position: relative;
+  margin-bottom: 4px;
+  max-width: 280px;
+  width: fit-content;
+}
+
+.lo-msg-media-btn {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  background: none;
+  cursor: zoom-in;
+  overflow: hidden;
+  line-height: 0;
+}
+
+.lo-msg-media-img {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  max-height: 280px;
+  object-fit: cover;
+  transition: opacity 0.15s ease;
+}
+
+.lo-msg-media-btn:hover .lo-msg-media-img {
+  opacity: 0.92;
+}
+
+.lo-msg-media-download {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  text-decoration: none;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(2px);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-msg-media-download:hover {
+  background: rgba(0, 0, 0, 0.75);
+  transform: scale(1.08);
+}
+
+/* Lightbox: overlay de pantalla completa para ver la imagen en grande. Se agrega a
+   document.body (no a #lo-chatbot-root), así que estas reglas NO están anidadas bajo
+   ese selector — deben verse igual sin importar dónde cuelgue el nodo en el DOM. */
+
+.lo-lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000000;
+  background: rgba(15, 20, 17, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  animation: lo-fade-in 0.15s ease;
+  font-family: "Poppins", "Segoe UI", Arial, sans-serif;
+}
+
+.lo-lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.lo-lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: scale(1.08);
+}
+
+/* Reproductor de nota de voz dentro de una burbuja de mensaje, con su transcripción
+   automática (Whisper) debajo, cuando está disponible. */
+
+.lo-msg-audio-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 240px;
+  margin-bottom: 4px;
+}
+
+.lo-msg-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  padding: 8px 10px;
+  min-width: 190px;
+}
+
+.lo-audio-play {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: none;
+  background: var(--lo-verde);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-audio-play:hover {
+  background: var(--lo-verde-claro);
+  transform: scale(1.05);
+}
+
+.lo-audio-play svg {
+  width: 13px;
+  height: 13px;
+  fill: var(--lo-blanco);
+}
+
+.lo-audio-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Waveform simple: barras de alto pseudoaleatorio (deterministas por fileId, ver
+   seededWaveformHeights) que se van "pintando" de verde a medida que avanza la
+   reproducción — hace de barra de progreso y de waveform a la vez, estilo WhatsApp. */
+.lo-audio-waveform {
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 20px;
+}
+
+.lo-audio-bar {
+  flex: 1;
+  min-width: 2px;
+  max-width: 3px;
+  border-radius: 2px;
+  background: var(--lo-borde);
+  transition: background 0.1s linear;
+}
+
+.lo-audio-bar-played {
+  background: var(--lo-verde);
+}
+
+.lo-audio-time {
+  font-size: 10.5px;
+  color: var(--lo-gris-oscuro);
+  font-variant-numeric: tabular-nums;
+}
+
+.lo-audio-transcript {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 11px;
+  color: var(--lo-gris-oscuro);
+  line-height: 1.45;
+}
+
+/* Burbuja especial: respuesta de Lucy en audio (texto-a-voz), con waveform animada
+   (wavesurfer.js), transcripción colapsable y botón de descarga. */
+
+.lo-lucy-audio-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 260px;
+  margin-bottom: 6px;
+}
+
+.lo-lucy-audio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: linear-gradient(135deg, #eafcf1 0%, #f4fef7 100%);
+  border: 1px solid #cdf0da;
+  border-radius: 14px;
+  padding: 8px 10px;
+  min-width: 210px;
+}
+
+.lo-lucy-audio-play {
+  flex-shrink: 0;
+}
+
+.lo-lucy-audio-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lo-lucy-waveform {
+  flex: 1;
+  min-height: 30px;
+}
+
+/* Waveform estática de respaldo (si wavesurfer.js no llegó a cargar desde el CDN) —
+   reutiliza el estilo de barras de las notas de voz del usuario. */
+.lo-lucy-waveform.lo-audio-waveform {
+  height: 30px;
+}
+
+.lo-lucy-audio-download {
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  text-decoration: none;
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-lucy-audio-download:hover {
+  background: var(--lo-fondo-chat);
+  transform: scale(1.08);
+}
+
+.lo-lucy-audio-transcript {
+  padding: 0 6px;
+}
+
+.lo-lucy-audio-transcript summary {
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lo-verde);
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  user-select: none;
+}
+
+.lo-lucy-audio-transcript summary::-webkit-details-marker {
+  display: none;
+}
+
+.lo-lucy-transcript-arrow {
+  display: inline-block;
+  font-size: 9px;
+  transition: transform 0.15s ease;
+}
+
+.lo-lucy-audio-transcript[open] .lo-lucy-transcript-arrow {
+  transform: rotate(180deg);
+}
+
+.lo-lucy-audio-transcript p {
+  margin: 6px 0 0;
+  font-size: 11px;
+  color: var(--lo-gris-oscuro);
+  line-height: 1.5;
+}
+
+.lo-msg-system {
+  align-self: center;
+  color: var(--lo-gris-oscuro);
+  font-size: 11.5px;
+  text-align: center;
+  max-width: 90%;
+  padding: 6px 12px;
+}
+
+/* Indicador "Lucy está escribiendo…" */
+
+.lo-typing-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  align-self: flex-start;
+}
+
+.lo-typing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 11px 14px;
+  background: var(--lo-fondo-burbuja-bot);
+  border: 1px solid var(--lo-borde);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+}
+
+.lo-typing-label {
+  font-size: 11.5px;
+  color: var(--lo-gris-oscuro);
+  white-space: nowrap;
+}
+
+.lo-typing-dots {
+  display: flex;
+  gap: 3px;
+}
+
+.lo-typing-dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lo-verde);
+  opacity: 0.5;
+  animation: lo-bounce 1.1s infinite ease-in-out;
+}
+
+.lo-typing-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.lo-typing-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes lo-bounce {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.5;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* Sugerencias rápidas */
+
+.lo-quick-replies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 14px 12px;
+  flex-shrink: 0;
+}
+
+.lo-quick-reply {
+  border: 1.5px solid var(--lo-verde);
+  color: var(--lo-verde);
+  background: var(--lo-blanco);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  font-family: var(--lo-font);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+  white-space: nowrap;
+}
+
+.lo-quick-reply:hover {
+  background: var(--lo-verde);
+  color: var(--lo-blanco);
+  transform: translateY(-1px);
+}
+
+.lo-quick-reply:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Pie: caja de texto */
+
+.lo-chat-footer {
+  border-top: 1px solid var(--lo-borde);
+  padding: 10px 12px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  background: var(--lo-blanco);
+}
+
+.lo-chat-input {
+  flex: 1;
+  resize: none;
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 20px;
+  padding: 10px 14px;
+  font-family: var(--lo-font);
+  font-size: 13.5px;
+  max-height: 90px;
+  outline: none;
+  transition: border-color 0.15s ease;
+  color: var(--lo-negro-texto);
+  background: var(--lo-fondo-chat);
+}
+
+.lo-chat-input:focus {
+  border-color: var(--lo-verde);
+  background: var(--lo-blanco);
+}
+
+.lo-chat-send {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: var(--lo-verde);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
+}
+
+.lo-chat-send:hover:not(:disabled) {
+  background: var(--lo-verde-claro);
+  transform: scale(1.05);
+}
+
+.lo-chat-send:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.lo-chat-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lo-chat-send svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--lo-blanco);
+  margin-left: 2px;
+}
+
+/* Botón de adjuntar (📎) */
+
+.lo-chat-attach-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: 1.5px solid var(--lo-borde);
+  background: var(--lo-blanco);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s ease, background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-chat-attach-btn:hover:not(:disabled) {
+  border-color: var(--lo-verde);
+  background: var(--lo-fondo-chat);
+  transform: scale(1.05);
+}
+
+.lo-chat-attach-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.lo-chat-attach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.lo-chat-attach-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: var(--lo-gris-oscuro);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Grabación de voz (nota de voz) — botón de micrófono, barra de grabación */
+/* con waveform en tiempo real y "desliza para cancelar", estilo WhatsApp. */
+/* ---------------------------------------------------------------------- */
+
+/* Botón de micrófono: ocupa el mismo lugar/tamaño que .lo-chat-send y se alterna
+   con él (solo uno de los dos está visible a la vez — ver updateMicSendToggle()). */
+.lo-mic-btn {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: var(--lo-verde);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.lo-mic-btn:hover:not(:disabled) {
+  background: var(--lo-verde-claro);
+  transform: scale(1.05);
+}
+
+.lo-mic-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lo-mic-btn svg {
+  width: 17px;
+  height: 17px;
+  fill: var(--lo-blanco);
+  pointer-events: none;
+}
+
+/* Estado "grabando": el botón se pone rojo y late con un anillo (ripple) alrededor. */
+.lo-mic-btn-recording {
+  background: var(--lo-rec-accent);
+  transition: background 0.15s ease; /* sin transición en transform: debe seguir al dedo/mouse sin retraso */
+}
+
+.lo-mic-btn-recording:hover:not(:disabled) {
+  background: var(--lo-rec-accent);
+  transform: none;
+}
+
+.lo-mic-btn-recording::before {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: rgba(230, 69, 59, 0.35);
+  animation: lo-mic-ripple 1.4s ease-out infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
+@keyframes lo-mic-ripple {
+  0% {
+    transform: scale(0.75);
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+/* Barra que reemplaza el campo de texto mientras se graba — mismo alto/forma que
+   .lo-chat-input para que la transición se sienta como una transformación del input. */
+.lo-recording-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 20px;
+  border: 1.5px solid var(--lo-rec-border);
+  background: var(--lo-rec-bg);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.lo-chat-footer.lo-recording-cancelling .lo-recording-bar {
+  background: #fbdad8;
+  border-color: #ecaba6;
+}
+
+.lo-recording-cancel-hint {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--lo-rec-text);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lo-recording-cancel-arrow {
+  display: inline-block;
+  animation: lo-cancel-arrow-nudge 1s ease-in-out infinite;
+}
+
+@keyframes lo-cancel-arrow-nudge {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-3px);
+  }
+}
+
+.lo-recording-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  color: var(--lo-rec-text);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.lo-recording-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--lo-rec-accent);
+  animation: lo-recording-blink 1s ease-in-out infinite;
+}
+
+@keyframes lo-recording-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.lo-recording-waveform {
+  flex-shrink: 0;
+  width: 64px;
+  height: 24px;
+}
+
+/* Preview del adjunto pendiente, encima del campo de texto */
+
+.lo-chat-attachment-preview {
+  padding: 0 12px 8px;
+  flex-shrink: 0;
+}
+
+.lo-attach-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--lo-fondo-chat);
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 12px;
+  padding: 6px 8px;
+}
+
+.lo-attach-uploading {
+  opacity: 0.75;
+}
+
+.lo-attach-thumb {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.lo-attach-file-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  flex-shrink: 0;
+}
+
+.lo-attach-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.lo-attach-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lo-negro-texto);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lo-attach-meta {
+  font-size: 11px;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-attach-uploading .lo-attach-meta {
+  color: var(--lo-verde);
+}
+
+.lo-attach-remove {
+  border: none;
+  background: none;
+  color: var(--lo-gris-oscuro);
+  font-size: 13px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.lo-attach-remove:hover:not(:disabled) {
+  background: #fdeaea;
+  color: #9a2f2f;
+}
+
+.lo-attach-remove:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.lo-chat-disclaimer {
+  font-size: 10px;
+  color: var(--lo-gris-claro);
+  text-align: center;
+  padding: 0 12px 10px;
+  flex-shrink: 0;
+  background: var(--lo-blanco);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Cotizador automático — tarjetas interactivas dentro del chat            */
+/* ---------------------------------------------------------------------- */
+
+.lo-quote-col {
+  display: flex;
+  flex-direction: column;
+  max-width: 92%;
+  min-width: 0;
+  flex: 1;
+}
+
+.lo-quote-card {
+  background: var(--lo-fondo-burbuja-bot);
+  border: 1px solid var(--lo-borde);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  overflow: hidden;
+  animation: lo-fade-in 0.22s ease;
+}
+
+.lo-quote-card-header {
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  font-weight: 600;
+  font-size: 13.5px;
+  padding: 10px 14px;
+}
+
+.lo-quote-card-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lo-quote-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-quote-field-inline {
+  display: inline-flex;
+}
+
+.lo-quote-field select,
+.lo-quote-field input[type="text"],
+.lo-quote-field input[type="number"],
+.lo-quote-field input[type="email"] {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13.5px;
+  font-family: var(--lo-font);
+  font-weight: 400;
+  color: var(--lo-negro-texto);
+  background: var(--lo-blanco);
+  outline: none;
+  transition: border-color 0.15s ease;
+  width: 100%;
+}
+
+.lo-quote-field select:focus,
+.lo-quote-field input:focus {
+  border-color: var(--lo-verde);
+}
+
+.lo-quote-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--lo-negro-texto);
+  margin-top: 8px;
+  cursor: pointer;
+}
+
+.lo-quote-checkbox input {
+  margin-top: 2px;
+  accent-color: var(--lo-verde);
+  flex-shrink: 0;
+}
+
+.lo-quote-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.lo-quote-card-body > .lo-quote-card-actions {
+  padding: 0;
+  margin-top: 2px;
+}
+
+.lo-quote-submit {
+  border: none;
+  border-radius: 10px;
+  padding: 9px 16px;
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  font-weight: 600;
+  font-size: 12.5px;
+  font-family: var(--lo-font);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  white-space: nowrap;
+}
+
+.lo-quote-submit:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0, 191, 99, 0.32);
+}
+
+.lo-quote-submit:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.lo-quote-cancel {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: var(--lo-blanco);
+  color: var(--lo-gris-oscuro);
+  font-weight: 500;
+  font-size: 12.5px;
+  font-family: var(--lo-font);
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.lo-quote-cancel:hover {
+  border-color: #d99;
+  color: #9a2f2f;
+}
+
+/* Chooser: botones de ramo a cotizar */
+
+.lo-quote-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.lo-quote-choice {
+  border: 1.5px solid var(--lo-verde);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--lo-blanco);
+  color: var(--lo-verde);
+  font-weight: 600;
+  font-size: 13.5px;
+  font-family: var(--lo-font);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.lo-quote-choice:hover {
+  background: var(--lo-verde);
+  color: var(--lo-blanco);
+  transform: translateY(-1px);
+}
+
+/* Tabla de resumen (coberturas / primas) */
+
+.lo-quote-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.lo-quote-table td {
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--lo-borde);
+  vertical-align: top;
+}
+
+.lo-quote-table td:first-child {
+  color: var(--lo-gris-oscuro);
+  padding-right: 10px;
+}
+
+.lo-quote-table td:last-child {
+  text-align: right;
+  font-weight: 600;
+  color: var(--lo-negro-texto);
+  white-space: nowrap;
+}
+
+.lo-quote-table tr:last-child td {
+  border-bottom: none;
+  border-top: 2px solid var(--lo-verde);
+  color: var(--lo-verde);
+  font-weight: 700;
+  padding-top: 10px;
+}
+
+.lo-quote-note {
+  margin: 10px 0 0;
+  font-size: 11.5px;
+  color: var(--lo-gris-oscuro);
+  line-height: 1.5;
+}
+
+.lo-quote-disclaimer {
+  margin: 10px 14px 0;
+  padding: 8px 10px;
+  background: #fffbe6;
+  border: 1px solid var(--lo-amarillo);
+  border-radius: 8px;
+  font-size: 10.5px;
+  color: #6b5f00;
+  line-height: 1.5;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Responsive: pantallas pequeñas -> chat a pantalla completa              */
+/* ---------------------------------------------------------------------- */
+
+@media (max-width: 480px) {
+  #lo-chatbot-root {
+    bottom: 16px;
+    right: 16px;
+  }
+
+  .lo-chat-window {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 0;
+    transform-origin: center;
+    transform: translateY(100%) scale(1);
+  }
+
+  #lo-chatbot-root.lo-open .lo-chat-window {
+    transform: translateY(0) scale(1);
+  }
+
+  .lo-chat-header {
+    padding-top: max(14px, env(safe-area-inset-top));
+  }
+
+  .lo-chat-footer {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  /* En pantallas angostas se prioriza el texto de "Desliza para cancelar" sobre el
+     waveform, para que no se corte ni empuje el botón de micrófono fuera de vista. */
+  .lo-recording-waveform {
+    display: none;
+  }
+
+  .lo-recording-cancel-hint {
+    font-size: 11px;
+  }
+}

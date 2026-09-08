@@ -1,0 +1,946 @@
+/*
+ * admin.css
+ * Panel de administración (/admin) — La Occidental C.A. de Seguros.
+ * Reutiliza los tokens de marca y clases de burbuja/avatar definidos en chatbot.css
+ * (--lo-verde, --lo-amarillo, --lo-gris-*, tipografía Poppins, .lo-avatar, .lo-msg…).
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+/* Los elementos con [hidden] deben quedar ocultos SIEMPRE, sin importar qué otra
+   regla de "display" les aplique más abajo (login/dashboard/modal usan flex). */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: var(--lo-font);
+  background: var(--lo-fondo-chat);
+  color: var(--lo-negro-texto);
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Pantalla de inicio de sesión                                            */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: linear-gradient(160deg, var(--lo-verde) 0%, var(--lo-verde-claro) 45%, var(--lo-fondo-chat) 45%);
+}
+
+.lo-admin-login-card {
+  width: 100%;
+  max-width: 360px;
+  background: var(--lo-blanco);
+  border-radius: var(--lo-radius);
+  box-shadow: var(--lo-sombra);
+  padding: 36px 30px 30px;
+  text-align: center;
+}
+
+.lo-admin-login-avatar {
+  margin: 0 auto 16px;
+  box-shadow: 0 6px 18px rgba(0, 191, 99, 0.35);
+}
+
+.lo-admin-login-title {
+  margin: 0 0 4px;
+  font-size: 19px;
+  font-weight: 700;
+}
+
+.lo-admin-login-sub {
+  margin: 0 0 24px;
+  font-size: 12.5px;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+
+.lo-admin-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-field input {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  color: var(--lo-negro-texto);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.lo-admin-field input:focus {
+  border-color: var(--lo-verde);
+}
+
+.lo-admin-field input[readonly] {
+  background: var(--lo-fondo-chat);
+  color: var(--lo-gris-oscuro);
+  cursor: not-allowed;
+}
+
+.lo-admin-login-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fdeaea;
+  border: 1px solid #f3c9c9;
+  color: #9a2f2f;
+  font-size: 12.5px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Botones                                                                  */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-btn-primary {
+  border: none;
+  border-radius: 10px;
+  padding: 11px 18px;
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  font-weight: 600;
+  font-size: 13.5px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+  white-space: nowrap;
+}
+
+.lo-admin-btn-primary:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(0, 191, 99, 0.32);
+}
+
+.lo-admin-btn-primary:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.lo-admin-btn-primary:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.lo-admin-btn-ghost {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 10px;
+  padding: 9px 14px;
+  background: var(--lo-blanco);
+  color: var(--lo-gris-oscuro);
+  font-weight: 500;
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+  white-space: nowrap;
+}
+
+.lo-admin-btn-ghost:hover {
+  border-color: var(--lo-verde);
+  color: var(--lo-verde);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Encabezado del panel                                                    */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-header {
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  padding: 14px 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 2px 10px rgba(0, 40, 20, 0.12);
+}
+
+.lo-admin-header-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.lo-admin-header-title {
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.lo-admin-header-sub {
+  font-size: 12px;
+  opacity: 0.92;
+}
+
+.lo-admin-header .lo-admin-btn-ghost {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.4);
+  color: var(--lo-blanco);
+}
+
+.lo-admin-header .lo-admin-btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.24);
+  border-color: var(--lo-blanco);
+  color: var(--lo-blanco);
+}
+
+/* Pestañas del encabezado (Conversaciones / Cotizador) */
+
+.lo-admin-tabs {
+  display: flex;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 3px;
+  flex-shrink: 0;
+}
+
+.lo-admin-tab {
+  border: none;
+  background: transparent;
+  color: var(--lo-blanco);
+  opacity: 0.85;
+  font-family: var(--lo-font);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.lo-admin-tab:hover {
+  opacity: 1;
+}
+
+.lo-admin-tab-active {
+  background: var(--lo-blanco);
+  color: var(--lo-verde);
+  opacity: 1;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Contenido principal                                                     */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 22px 22px 60px;
+}
+
+/* Tarjetas de estadísticas */
+
+.lo-admin-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.lo-admin-stat-card {
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  padding: 16px 18px;
+}
+
+.lo-admin-stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--lo-verde);
+  line-height: 1.2;
+}
+
+.lo-admin-stat-label {
+  font-size: 12px;
+  color: var(--lo-gris-oscuro);
+  margin-top: 2px;
+}
+
+/* Barra de herramientas: búsqueda + filtros */
+
+.lo-admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+}
+
+.lo-admin-input {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13px;
+  color: var(--lo-negro-texto);
+  outline: none;
+  background: var(--lo-fondo-chat);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.lo-admin-input:focus {
+  border-color: var(--lo-verde);
+  background: var(--lo-blanco);
+}
+
+.lo-admin-search {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.lo-admin-toolbar-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Tabla de conversaciones                                                 */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-table-wrap {
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  overflow: hidden;
+}
+
+.lo-admin-table-scroll {
+  overflow-x: auto;
+}
+
+.lo-admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 720px;
+}
+
+.lo-admin-table thead th {
+  text-align: left;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--lo-gris-oscuro);
+  background: var(--lo-fondo-chat);
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--lo-borde);
+  white-space: nowrap;
+}
+
+.lo-admin-table tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--lo-borde);
+  vertical-align: top;
+}
+
+.lo-admin-table tbody tr {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.lo-admin-table tbody tr:hover {
+  background: #f2fbf6;
+}
+
+.lo-admin-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.lo-admin-cell-preview {
+  color: var(--lo-gris-oscuro);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lo-admin-attach-icon {
+  margin-right: 5px;
+}
+
+.lo-admin-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.lo-admin-badge-ramo {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid #bdeed3;
+  margin: 0 4px 4px 0;
+}
+
+.lo-admin-badge-advisor-yes {
+  background: #fff9db;
+  color: #7a6400;
+  border: 1px solid var(--lo-amarillo);
+}
+
+.lo-admin-badge-advisor-no {
+  background: var(--lo-fondo-chat);
+  color: var(--lo-gris-claro);
+  border: 1px solid var(--lo-borde);
+}
+
+.lo-admin-loading,
+.lo-admin-empty {
+  text-align: center;
+  padding: 36px 20px;
+  color: var(--lo-gris-oscuro);
+  font-size: 13.5px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Modal de detalle de conversación                                        */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.lo-admin-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 30, 22, 0.5);
+}
+
+.lo-admin-modal-panel {
+  position: relative;
+  width: 100%;
+  max-width: 560px;
+  height: min(720px, 88vh);
+  background: var(--lo-fondo-chat);
+  border-radius: var(--lo-radius);
+  box-shadow: var(--lo-sombra);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.lo-admin-modal-header {
+  background: linear-gradient(135deg, var(--lo-verde) 0%, var(--lo-verde-claro) 100%);
+  color: var(--lo-blanco);
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.lo-admin-modal-title {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.lo-admin-modal-meta {
+  font-size: 11.5px;
+  opacity: 0.92;
+  margin-top: 2px;
+}
+
+.lo-admin-modal-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Insignias de cotización en la tabla de conversaciones */
+
+.lo-admin-badge-quote {
+  background: #eef6ff;
+  color: #1a5fa8;
+  border: 1px solid #bcdcff;
+  margin: 0 4px 4px 0;
+}
+
+.lo-admin-badge-formal {
+  background: var(--lo-verde);
+  color: var(--lo-blanco);
+  border: 1px solid var(--lo-verde);
+  margin: 0 4px 4px 0;
+}
+
+/* Insignias de canal (Web / WhatsApp) */
+
+.lo-admin-badge-web {
+  background: var(--lo-fondo-chat);
+  color: var(--lo-gris-oscuro);
+  border: 1px solid var(--lo-borde);
+}
+
+.lo-admin-badge-whatsapp {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #25d366;
+  color: var(--lo-blanco);
+  border: 1px solid #1ebd5a;
+  font-weight: 700;
+}
+
+.lo-whatsapp-icon {
+  width: 12px;
+  height: 12px;
+  fill: var(--lo-blanco);
+  flex-shrink: 0;
+}
+
+/* Sección de cotizaciones dentro del modal de detalle */
+
+.lo-admin-quotes-section {
+  padding: 14px 16px 4px;
+  border-top: 1px dashed var(--lo-borde);
+}
+
+.lo-admin-quotes-section h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-quote-item {
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 12px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+}
+
+.lo-admin-quote-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.lo-admin-quote-item table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.lo-admin-quote-item td {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--lo-fondo-chat);
+  vertical-align: top;
+}
+
+.lo-admin-quote-item td:first-child {
+  color: var(--lo-gris-oscuro);
+  padding-right: 10px;
+  white-space: nowrap;
+}
+
+.lo-admin-quote-item td:last-child {
+  text-align: right;
+  font-weight: 600;
+}
+
+.lo-admin-quote-contact {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--lo-borde);
+  font-size: 12px;
+  color: var(--lo-gris-oscuro);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Configuración del cotizador (no-code)                                   */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-quoter-intro {
+  background: #eafcf1;
+  border: 1px solid #bdeed3;
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  color: var(--lo-negro-texto);
+}
+
+.lo-admin-quoter-intro strong {
+  color: var(--lo-verde);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.lo-admin-quoter-intro p {
+  margin: 0;
+  color: var(--lo-gris-oscuro);
+  line-height: 1.5;
+}
+
+.lo-quoter-save-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--lo-fondo-chat);
+  padding: 10px 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-bottom: 4px !important;
+}
+
+.lo-quoter-save-status {
+  margin: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 8px;
+}
+
+.lo-quoter-save-status.lo-status-ok {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid #bdeed3;
+}
+
+.lo-quoter-save-status.lo-status-error {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+}
+
+.lo-admin-card {
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 18px;
+}
+
+.lo-admin-card h2 {
+  margin: 0 0 14px;
+  font-size: 16px;
+}
+
+.lo-admin-card h3 {
+  margin: 18px 0 6px;
+  font-size: 13px;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-card .lo-quote-field {
+  margin-bottom: 12px;
+}
+
+.lo-admin-card .lo-quote-field textarea {
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 9px;
+  padding: 9px 11px;
+  font-size: 13px;
+  font-family: var(--lo-font);
+  color: var(--lo-negro-texto);
+  resize: vertical;
+  outline: none;
+}
+
+.lo-admin-card .lo-quote-field textarea:focus {
+  border-color: var(--lo-verde);
+}
+
+.lo-admin-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 16px;
+}
+
+.lo-admin-inline-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--lo-gris-oscuro);
+  margin-bottom: 14px;
+  cursor: pointer;
+}
+
+.lo-admin-inline-check input {
+  accent-color: var(--lo-verde);
+  width: 16px;
+  height: 16px;
+}
+
+.lo-admin-hint {
+  font-size: 11.5px;
+  color: var(--lo-gris-claro);
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+
+/* Tablas editables (filas con inputs) */
+
+.lo-admin-edit-table {
+  min-width: 640px;
+}
+
+.lo-admin-edit-table input[type="text"],
+.lo-admin-edit-table input[type="number"] {
+  width: 100%;
+  min-width: 70px;
+  border: 1.5px solid var(--lo-borde);
+  border-radius: 7px;
+  padding: 6px 8px;
+  font-size: 12.5px;
+  font-family: var(--lo-font);
+  color: var(--lo-negro-texto);
+  outline: none;
+}
+
+.lo-admin-edit-table input:focus {
+  border-color: var(--lo-verde);
+}
+
+.lo-admin-edit-table input[data-field="id"] {
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--lo-gris-oscuro);
+  min-width: 110px;
+}
+
+.lo-admin-edit-table input[data-field="label"] {
+  min-width: 180px;
+}
+
+.lo-admin-edit-table input[type="checkbox"] {
+  accent-color: var(--lo-verde);
+  width: 16px;
+  height: 16px;
+}
+
+.lo-admin-row-remove {
+  border: none;
+  background: none;
+  color: #c25050;
+  cursor: pointer;
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.lo-admin-row-remove:hover {
+  background: #fdeaea;
+}
+
+.lo-admin-card-save {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Reportes y métricas                                                     */
+/* ---------------------------------------------------------------------- */
+
+.lo-admin-stats-7 {
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.lo-admin-stat-value-text {
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+.lo-report-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  margin-bottom: 18px;
+}
+
+.lo-report-chart-card-wide {
+  grid-column: 1 / -1;
+}
+
+.lo-report-chart-card h2 {
+  margin: 0 0 4px;
+  font-size: 14.5px;
+}
+
+.lo-report-chart-wrap {
+  position: relative;
+  height: 260px;
+  margin-top: 12px;
+}
+
+.lo-report-quotes-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.lo-report-quotes-header h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+/* Nota de voz dentro del transcript de una conversación */
+
+.lo-admin-audio-chip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid var(--lo-borde);
+  border-radius: 12px;
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  max-width: 340px;
+}
+
+.lo-admin-audio {
+  height: 32px;
+  max-width: 240px;
+}
+
+.lo-admin-audio-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--lo-verde);
+  background: #eafcf1;
+  border: 1px solid #cdf0da;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+/* Video explicativo de Lucy dentro del transcript de una conversación */
+
+.lo-admin-video-title {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-audio-transcript {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  color: var(--lo-gris-oscuro);
+  line-height: 1.45;
+}
+
+.lo-admin-audio-transcript-none {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+@media (max-width: 900px) {
+  .lo-report-charts-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .lo-admin-header {
+    padding: 12px 14px;
+  }
+  .lo-admin-header {
+    padding: 12px 14px;
+  }
+
+  .lo-admin-main {
+    padding: 16px 12px 40px;
+  }
+
+  .lo-admin-toolbar {
+    padding: 12px;
+  }
+
+  .lo-admin-modal {
+    padding: 0;
+  }
+
+  .lo-admin-modal-panel {
+    max-width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+
+  .lo-admin-header {
+    flex-wrap: wrap;
+  }
+
+  .lo-admin-tabs {
+    order: 3;
+    width: 100%;
+  }
+
+  .lo-admin-tab {
+    flex: 1;
+  }
+
+  .lo-admin-grid-2 {
+    grid-template-columns: 1fr;
+  }
+
+  .lo-admin-card {
+    padding: 16px;
+  }
+}

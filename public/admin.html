@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Panel de administración — La Occidental</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <!-- Reutiliza los tokens de marca y los estilos de burbujas/avatar del widget de chat -->
+  <link rel="stylesheet" href="chatbot.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body>
+  <div id="lo-admin-root">
+    <!-- ================= Pantalla de inicio de sesión ================= -->
+    <div id="lo-admin-login" class="lo-admin-login-screen">
+      <div class="lo-admin-login-card">
+        <div class="lo-avatar lo-avatar-lg lo-admin-login-avatar">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="4" r="1.3"></circle>
+            <rect x="11.3" y="5" width="1.4" height="2.6"></rect>
+            <rect x="4.5" y="7.5" width="15" height="11" rx="5.5"></rect>
+            <circle cx="9.4" cy="13" r="1.6" fill="#ffffff"></circle>
+            <circle cx="14.6" cy="13" r="1.6" fill="#ffffff"></circle>
+            <rect x="10" y="16.3" width="4" height="1.3" rx="0.65" fill="#ffffff"></rect>
+          </svg>
+          <img src="lucy-avatar.png" alt="" onerror="this.remove()" />
+        </div>
+        <h1 class="lo-admin-login-title">Panel de administración</h1>
+        <p class="lo-admin-login-sub">La Occidental · Chatbot Lucy</p>
+
+        <form id="lo-admin-login-form" class="lo-admin-login-form" autocomplete="on">
+          <label class="lo-admin-field">
+            <span>Usuario</span>
+            <input type="text" id="lo-admin-username" value="admin" autocomplete="username" readonly />
+          </label>
+          <label class="lo-admin-field">
+            <span>Contraseña</span>
+            <input
+              type="password"
+              id="lo-admin-password"
+              autocomplete="current-password"
+              placeholder="Ingresa tu contraseña"
+              required
+            />
+          </label>
+          <p class="lo-admin-login-error" id="lo-admin-login-error" hidden></p>
+          <button type="submit" class="lo-admin-btn-primary" id="lo-admin-login-submit">Ingresar</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ================= Panel principal (dashboard) ================= -->
+    <div id="lo-admin-dashboard" class="lo-admin-dashboard" hidden>
+      <header class="lo-admin-header">
+        <div class="lo-admin-header-brand">
+          <div class="lo-avatar lo-avatar-md">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="4" r="1.3"></circle>
+              <rect x="11.3" y="5" width="1.4" height="2.6"></rect>
+              <rect x="4.5" y="7.5" width="15" height="11" rx="5.5"></rect>
+              <circle cx="9.4" cy="13" r="1.6" fill="#ffffff"></circle>
+              <circle cx="14.6" cy="13" r="1.6" fill="#ffffff"></circle>
+              <rect x="10" y="16.3" width="4" height="1.3" rx="0.65" fill="#ffffff"></rect>
+            </svg>
+            <img src="lucy-avatar.png" alt="" onerror="this.remove()" />
+          </div>
+          <div>
+            <div class="lo-admin-header-title">Panel de administración</div>
+            <div class="lo-admin-header-sub">La Occidental · Conversaciones de Lucy</div>
+          </div>
+        </div>
+        <nav class="lo-admin-tabs">
+          <button type="button" class="lo-admin-tab lo-admin-tab-active" id="lo-admin-tab-conversations">
+            💬 Conversaciones
+          </button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-quoter">⚙️ Cotizador</button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-reports">📊 Reportes</button>
+        </nav>
+        <button type="button" id="lo-admin-logout" class="lo-admin-btn-ghost">Cerrar sesión</button>
+      </header>
+
+      <main class="lo-admin-main" id="lo-admin-view-conversations">
+        <section class="lo-admin-stats" id="lo-admin-stats" aria-live="polite"></section>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-admin-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar por ID de sesión o mensaje..."
+          />
+
+          <label class="lo-admin-toolbar-field">
+            <span>Desde</span>
+            <input type="date" id="lo-admin-date-from" class="lo-admin-input" />
+          </label>
+
+          <label class="lo-admin-toolbar-field">
+            <span>Hasta</span>
+            <input type="date" id="lo-admin-date-to" class="lo-admin-input" />
+          </label>
+
+          <label class="lo-admin-toolbar-field">
+            <span>Canal</span>
+            <select id="lo-admin-filter-channel" class="lo-admin-input">
+              <option value="">Todos</option>
+              <option value="web">💬 Chat web</option>
+              <option value="whatsapp">WhatsApp</option>
+            </select>
+          </label>
+
+          <label class="lo-admin-toolbar-field">
+            <span>Ramo</span>
+            <select id="lo-admin-filter-ramo" class="lo-admin-input">
+              <option value="">Todos los ramos</option>
+              <option value="personas">Personas</option>
+              <option value="autos">Automóviles</option>
+              <option value="patrimoniales">Patrimoniales</option>
+              <option value="fianzas">Fianzas</option>
+            </select>
+          </label>
+
+          <label class="lo-admin-toolbar-field">
+            <span>Asesor</span>
+            <select id="lo-admin-filter-advisor" class="lo-admin-input">
+              <option value="">Todas</option>
+              <option value="si">Pidió asesor</option>
+              <option value="no">No pidió asesor</option>
+            </select>
+          </label>
+
+          <button type="button" id="lo-admin-clear-filters" class="lo-admin-btn-ghost">Limpiar filtros</button>
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-admin-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+          <button type="button" id="lo-admin-export" class="lo-admin-btn-primary" title="Descargar CSV">
+            ⬇ Exportar CSV
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Canal</th>
+                  <th>Fecha de inicio</th>
+                  <th>Duración</th>
+                  <th>Mensajes</th>
+                  <th>Ramos mencionados</th>
+                  <th>Asesor solicitado</th>
+                  <th>Cotización</th>
+                  <th>Vista previa</th>
+                </tr>
+              </thead>
+              <tbody id="lo-admin-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-admin-loading">Cargando conversaciones…</div>
+          <div class="lo-admin-empty" id="lo-admin-empty" hidden>
+            No hay conversaciones que coincidan con la búsqueda o los filtros.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: configuración del cotizador (no-code) ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-quoter" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Configuración del cotizador automático</strong>
+          <p>
+            Todo lo que ves aquí controla el formulario que Lucy muestra en el chat cuando alguien quiere cotizar
+            — tarifas, textos y opciones. Los cambios se guardan al hacer clic en "Guardar cambios" al final de
+            cada sección; no requieren tocar código.
+          </p>
+        </div>
+
+        <div class="lo-admin-loading" id="lo-quoter-loading">Cargando configuración…</div>
+        <div id="lo-quoter-content" hidden>
+          <div class="lo-admin-card-save lo-quoter-save-bar">
+            <p class="lo-quoter-save-status" id="lo-quoter-status" hidden></p>
+            <button type="button" class="lo-admin-btn-primary lo-quoter-save-btn">💾 Guardar todos los cambios</button>
+          </div>
+
+          <!-- General -->
+          <section class="lo-admin-card">
+            <h2>Mensajes generales</h2>
+            <label class="lo-quote-field">
+              <span>Mensaje de bienvenida al cotizador</span>
+              <textarea id="lo-quoter-intro" rows="2"></textarea>
+            </label>
+            <label class="lo-quote-field">
+              <span>Aviso legal (disclaimer) mostrado en cada cotización</span>
+              <textarea id="lo-quoter-disclaimer" rows="3"></textarea>
+            </label>
+            <label class="lo-quote-field">
+              <span>Palabras clave que activan el cotizador (separadas por coma)</span>
+              <input type="text" id="lo-quoter-keywords" />
+            </label>
+          </section>
+
+          <!-- RCV -->
+          <section class="lo-admin-card">
+            <h2>🚗 Automóviles (RCV)</h2>
+            <label class="lo-admin-inline-check">
+              <input type="checkbox" id="lo-quoter-rcv-enabled" />
+              <span>Ramo activo (visible en el cotizador)</span>
+            </label>
+            <div class="lo-admin-grid-2">
+              <label class="lo-quote-field">
+                <span>Nombre del ramo</span>
+                <input type="text" id="lo-quoter-rcv-label" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Año mínimo del vehículo</span>
+                <input type="number" id="lo-quoter-rcv-minyear" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Etiqueta de moneda</span>
+                <input type="text" id="lo-quoter-rcv-currency-label" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Rebaja "sin fines de lucro" (%)</span>
+                <input type="number" id="lo-quoter-rcv-rebaja-pct" min="0" max="100" />
+              </label>
+            </div>
+            <label class="lo-quote-field">
+              <span>Nota sobre la moneda (se muestra en el resumen)</span>
+              <textarea id="lo-quoter-rcv-currency-note" rows="2"></textarea>
+            </label>
+            <label class="lo-quote-field">
+              <span>Marcas comunes en el desplegable (separadas por coma; "Otra" se agrega siempre al final)</span>
+              <input type="text" id="lo-quoter-rcv-marcas" />
+            </label>
+
+            <h3>Tarifas por tipo de vehículo</h3>
+            <p class="lo-admin-hint">
+              Montos en TCR según la Providencia SAA-01-0512-2024. Cada fila es una opción del desplegable "Tipo de
+              vehículo".
+            </p>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table lo-admin-edit-table" id="lo-quoter-rcv-tarifas-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Etiqueta (se ve en el desplegable)</th>
+                    <th>Rebaja sin lucro</th>
+                    <th>Nac. Cosas</th>
+                    <th>Nac. Personas</th>
+                    <th>Nac. Prima</th>
+                    <th>Ext. Cosas</th>
+                    <th>Ext. Personas</th>
+                    <th>Ext. Prima</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="lo-quoter-rcv-tarifas-body"></tbody>
+              </table>
+            </div>
+            <button type="button" class="lo-admin-btn-ghost" id="lo-quoter-rcv-tarifa-add">+ Agregar tipo de vehículo</button>
+
+            <h3>Recargos por agravación de riesgo</h3>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table lo-admin-edit-table" id="lo-quoter-rcv-recargos-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Etiqueta</th>
+                    <th>% recargo</th>
+                    <th>Activo</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="lo-quoter-rcv-recargos-body"></tbody>
+              </table>
+            </div>
+            <button type="button" class="lo-admin-btn-ghost" id="lo-quoter-rcv-recargo-add">+ Agregar recargo</button>
+
+            <div class="lo-admin-card-save">
+              <button type="button" class="lo-admin-btn-primary lo-quoter-save-btn">💾 Guardar todos los cambios</button>
+            </div>
+          </section>
+
+          <!-- HCM -->
+          <section class="lo-admin-card">
+            <h2>🏥 HCM (Hospitalización y Cirugía)</h2>
+            <label class="lo-admin-inline-check">
+              <input type="checkbox" id="lo-quoter-hcm-enabled" />
+              <span>Ramo activo (visible en el cotizador)</span>
+            </label>
+            <div class="lo-admin-grid-2">
+              <label class="lo-quote-field">
+                <span>Nombre del ramo</span>
+                <input type="text" id="lo-quoter-hcm-label" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Etiqueta de moneda</span>
+                <input type="text" id="lo-quoter-hcm-currency-label" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Edad máxima cubierta</span>
+                <input type="number" id="lo-quoter-hcm-maxage" min="0" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Máximo de beneficiarios adicionales</span>
+                <input type="number" id="lo-quoter-hcm-maxbenef" min="0" />
+              </label>
+            </div>
+
+            <h3>Sumas aseguradas disponibles</h3>
+            <p class="lo-admin-hint">
+              Cada una se convierte en una columna de tarifa en la tabla de rangos de edad de abajo. El ID debe
+              coincidir exactamente entre ambas tablas (usa solo números, sin puntos ni comas).
+            </p>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table lo-admin-edit-table" id="lo-quoter-hcm-sumas-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Etiqueta</th>
+                    <th>Valor (USD)</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="lo-quoter-hcm-sumas-body"></tbody>
+              </table>
+            </div>
+            <button type="button" class="lo-admin-btn-ghost" id="lo-quoter-hcm-suma-add">+ Agregar suma asegurada</button>
+
+            <h3>Tarifas por rango de edad</h3>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table lo-admin-edit-table" id="lo-quoter-hcm-rangos-table">
+                <thead id="lo-quoter-hcm-rangos-head">
+                  <tr>
+                    <th>ID</th>
+                    <th>Etiqueta</th>
+                    <th>Edad mín.</th>
+                    <th>Edad máx.</th>
+                  </tr>
+                </thead>
+                <tbody id="lo-quoter-hcm-rangos-body"></tbody>
+              </table>
+            </div>
+            <button type="button" class="lo-admin-btn-ghost" id="lo-quoter-hcm-rango-add">+ Agregar rango de edad</button>
+
+            <div class="lo-admin-card-save">
+              <button type="button" class="lo-admin-btn-primary lo-quoter-save-btn">💾 Guardar todos los cambios</button>
+            </div>
+          </section>
+
+          <!-- Patrimoniales -->
+          <section class="lo-admin-card">
+            <h2>🏠 Patrimoniales (Incendio/Robo)</h2>
+            <label class="lo-admin-inline-check">
+              <input type="checkbox" id="lo-quoter-pat-enabled" />
+              <span>Ramo activo (visible en el cotizador)</span>
+            </label>
+            <label class="lo-quote-field">
+              <span>Nombre del ramo</span>
+              <input type="text" id="lo-quoter-pat-label" />
+            </label>
+            <label class="lo-quote-field">
+              <span>Mensaje mostrado al enviar la cotización al equipo comercial</span>
+              <textarea id="lo-quoter-pat-mensaje" rows="2"></textarea>
+            </label>
+
+            <h3>Tipos de bien</h3>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table lo-admin-edit-table" id="lo-quoter-pat-tipos-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Etiqueta</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="lo-quoter-pat-tipos-body"></tbody>
+              </table>
+            </div>
+            <button type="button" class="lo-admin-btn-ghost" id="lo-quoter-pat-tipo-add">+ Agregar tipo de bien</button>
+
+            <div class="lo-admin-card-save">
+              <button type="button" class="lo-admin-btn-primary lo-quoter-save-btn">💾 Guardar todos los cambios</button>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <!-- ============= Vista: reportes y métricas ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-reports" hidden>
+        <div class="lo-admin-loading" id="lo-report-loading">Cargando reportes…</div>
+
+        <div id="lo-report-content" hidden>
+          <section class="lo-admin-stats lo-admin-stats-7" id="lo-report-stats" aria-live="polite"></section>
+
+          <div class="lo-report-charts-grid">
+            <section class="lo-admin-card lo-report-chart-card">
+              <h2>Conversaciones por día (últimos 30 días)</h2>
+              <div class="lo-report-chart-wrap">
+                <canvas id="lo-report-chart-daily"></canvas>
+              </div>
+            </section>
+
+            <section class="lo-admin-card lo-report-chart-card">
+              <h2>Distribución por ramo</h2>
+              <div class="lo-report-chart-wrap">
+                <canvas id="lo-report-chart-ramo"></canvas>
+              </div>
+            </section>
+
+            <section class="lo-admin-card lo-report-chart-card lo-report-chart-card-wide">
+              <h2>Actividad por hora del día</h2>
+              <p class="lo-admin-hint">Cantidad de mensajes enviados en cada hora (hora de Venezuela, UTC-4).</p>
+              <div class="lo-report-chart-wrap">
+                <canvas id="lo-report-chart-hourly"></canvas>
+              </div>
+            </section>
+          </div>
+
+          <section class="lo-admin-card">
+            <div class="lo-report-quotes-header">
+              <h2>Cotizaciones generadas</h2>
+              <button type="button" class="lo-admin-btn-primary" id="lo-report-export-quotes" title="Descargar CSV">
+                ⬇ Exportar CSV
+              </button>
+            </div>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table">
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Ramo</th>
+                    <th>Valor estimado</th>
+                    <th>Solicitante</th>
+                    <th>Póliza formal</th>
+                  </tr>
+                </thead>
+                <tbody id="lo-report-quotes-body"></tbody>
+              </table>
+            </div>
+            <div class="lo-admin-empty" id="lo-report-quotes-empty" hidden>
+              Aún no se ha generado ninguna cotización.
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <!-- ================= Modal: detalle de conversación ================= -->
+  <div id="lo-admin-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-admin-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Detalle de la conversación">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title">Conversación</div>
+          <div class="lo-admin-modal-meta" id="lo-admin-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-admin-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body lo-chat-body" id="lo-admin-modal-body"></div>
+    </div>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+node_modules/
+.env
+npm-debug.log*
+*.log
+.DS_Store
+
+# Datos de conversaciones de usuarios reales (información sensible) — no versionar.
+conversations.json
+
+# Archivos adjuntos por los usuarios (fotos de siniestros, documentos con datos
+# personales) y su índice — información sensible, no versionar.
+/uploads/
