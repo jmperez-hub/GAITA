@@ -43,6 +43,12 @@ mediante Server-Sent Events (SSE). Lucy, la misma asistente, también responde p
 │                           #   versiona, ver "Portal de corredores" más abajo
 ├── data/emisiones.json     # Solicitudes de emisión enviadas desde el portal — se crea solo;
 │                           #   no versionar (contiene datos reales de clientes una vez usado)
+├── data/gaps-conocimiento.json          # Preguntas que Lucy no respondió bien — se crea solo, no versionar
+├── data/notificaciones-programadas.json # Último recordatorio enviado por póliza (evita spam) — se
+│                                         #   crea solo, no versionar
+├── config/
+│   └── scheduler.config.js # Horarios/umbrales de las tareas programadas (node-cron) — ver
+│                           #   "Tareas programadas" más abajo
 ├── services/
 │   ├── polizas.service.js     # Consulta de pólizas (por cédula/número, vigencia, coberturas) —
 │   │                           #   aislado del resto para poder apuntar a una API real (ver abajo)
@@ -138,6 +144,7 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | --------------------------- | ---------------------------------------------------------------------------- | -------------------------- |
 | `ANTHROPIC_API_KEY`         | Clave de API de Anthropic (requerida)                                        | —                           |
 | `CLAUDE_MODEL`              | Modelo de Claude a utilizar                                                   | `claude-opus-5`             |
+| `CLAUDE_FAST_MODEL`         | Modelo rápido para el [clasificador de intención/emoción](#clasificador-de-intención-y-emoción) | `claude-haiku-4-5-20251001` |
 | `PORT`                      | Puerto del servidor Express                                                   | `3000`                     |
 | `ALLOWED_ORIGINS`           | Orígenes permitidos por CORS, separados por coma                              | `http://localhost:3000`    |
 | `RATE_LIMIT_WINDOW_MS`      | Ventana de tiempo (ms) para el límite de peticiones                           | `60000`                    |
@@ -160,6 +167,8 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `CORREDOR_CHEQUEO_VENCIMIENTOS_MS` | Cada cuánto se revisan las pólizas de cada corredor conectado por notificaciones de "vence en 7 días" | `600000` (10 min) |
 | `CORREDORES_FILE`           | Ruta del archivo JSON con las cuentas de corredor (fixture, contraseñas de demo) | `data/corredores.json`   |
 | `EMISIONES_FILE`            | Ruta del archivo JSON con las solicitudes de emisión del portal de corredores | `data/emisiones.json`       |
+| `NOTIFICACIONES_PROGRAMADAS_FILE` | Ruta del archivo JSON con la última fecha de recordatorio de cada póliza (evita spam — ver [Tareas programadas](#tareas-programadas-configschedulerconfigjs)) | `data/notificaciones-programadas.json` |
+| `GAPS_CONOCIMIENTO_FILE`    | Ruta del archivo JSON con las preguntas que Lucy no respondió bien             | `data/gaps-conocimiento.json` |
 | `UPLOADS_DIR`               | Carpeta donde se guardan las fotos/documentos/notas de voz adjuntos           | `uploads`                   |
 | `MAX_UPLOAD_SIZE_MB`        | Tamaño máximo por archivo adjunto, en MB                                      | `5`                         |
 | `OPENAI_API_KEY`            | Clave de OpenAI para transcribir notas de voz (Whisper) y, como respaldo, para que Lucy responda en audio (OpenAI TTS) | — |
@@ -632,6 +641,127 @@ mismo patrón de caché en memoria + cola de escritura serializada que
 > `data/emisiones.json` acumula datos reales de clientes una vez que se usa —
 > excluido de git, mismo criterio que `data/clientes.json`.
 
+## Motor de inteligencia
+
+Un conjunto de mecanismos que se suman al resto del chatbot para hacerlo más proactivo
+y fácil de mejorar con el tiempo: clasificación de intención/emoción, valoración de
+calidad, tareas programadas, aprendizaje de preguntas sin respuesta, y un modo
+supervisor para que el equipo intervenga en vivo.
+
+### Clasificador de intención y emoción
+
+Antes de generar cada respuesta "normal" (es decir, cuando el mensaje no cayó en
+ninguno de los flujos guionados deterministas — identificación, siniestros, valoración),
+`classifyIntentAndEmotion()` (`server.js`) hace una llamada RÁPIDA y aparte a Claude
+(modelo `CLAUDE_FAST_MODEL`, por defecto `claude-haiku-4-5-20251001`) pidiéndole un JSON
+compacto con:
+
+- **Intención**: `cotizar`, `consultar_poliza`, `reportar_siniestro`,
+  `consultar_siniestro`, `quejar`, `cancelar_poliza`, `renovar`, `hablar_humano`,
+  `saludo`, `despedida`, `otra`.
+- **Emoción**: `urgente`, `molesto`, `confundido`, `satisfecho`, `neutral`.
+
+Según el resultado, se agrega un bloque de instrucciones al `system` prompt (ver
+`INTENT_GUIDANCE`/`EMOTION_GUIDANCE`) — nunca reemplaza los datos reales ya inyectados
+(pólizas, siniestros): solo ajusta el TONO y el encuadre de la respuesta. Por ejemplo,
+`emocion=molesto` hace que Lucy reconozca la frustración antes que cualquier otra cosa y
+marca la conversación como `escalado` (visible en `/admin`); `emocion=confundido` le pide
+a Lucy usar lenguaje más simple.
+
+> **Nota de diseño:** esta llamada nunca bloquea la respuesta real — tiene un timeout de
+> 3 segundos y, si falla o tarda demasiado, se usa `{intencion: "otra", emocion: "neutral"}`
+> y la conversación sigue con normalidad. Los intents `reportar_siniestro`,
+> `consultar_poliza`/`consultar_siniestro` y `hablar_humano` YA tienen su propio manejo
+> determinista en otras partes del proyecto (flujo de siniestros, contexto real de
+> pólizas/siniestros, detección de solicitud de asesor) — el clasificador no los duplica,
+> solo cubre los casos que antes no tenían ningún tratamiento especial (queja, cancelación,
+> renovación) y ajusta el tono según la emoción detectada.
+
+### Valoración de calidad
+
+Al detectar una señal de cierre satisfactorio (el usuario dice "gracias", se despide, o
+el clasificador detecta `emocion=satisfecho`), Lucy agrega al final de su respuesta:
+*"¿Pude ayudarte con algo más? Califica tu experiencia del 1 al 5 ⭐"* — y
+`record.ratingState` pasa a `"asked"`. El siguiente mensaje del usuario se interpreta
+como la valoración (`handleRatingGate` en `server.js`, acepta un dígito 1-5, el número
+en palabras, o una cadena de estrellas ⭐/★); si no se puede interpretar como valoración,
+no bloquea la conversación — simplemente sigue su curso normal.
+
+La valoración se guarda en la conversación (`record.rating`) y en el perfil persistente
+del cliente (`cliente.ultimaValoracion` / `historialValoraciones`, últimas 20). Una
+valoración de 1 o 2 marca `requiereRevision: true`, visible en la pestaña
+"💬 Conversaciones" del panel `/admin` (columna "Valoración" + filtro dedicado).
+
+Por WhatsApp, además, si una conversación queda inactiva 10 minutos después de que Lucy
+respondió por última vez (y todavía no se le preguntó la valoración), un chequeo
+periódico se la pregunta proactivamente — ver "Tareas programadas" más abajo. El widget
+web no tiene ese chequeo por inactividad (no hay una conexión abierta fuera de una
+petición activa para empujarle un mensaje sin que el usuario escriba algo — ver "Modo
+supervisor" para el mecanismo que sí lo permite).
+
+### Tareas programadas (`config/scheduler.config.js`)
+
+Tres tareas con [`node-cron`](https://www.npmjs.com/package/node-cron), configurables
+sin tocar código en `config/scheduler.config.js`:
+
+| Tarea | Horario por defecto | Qué hace |
+| --- | --- | --- |
+| `recordatoriosPolizas` | 9:00 AM diario | WhatsApp al cliente y a su corredor por cada póliza que vence dentro de 30 días |
+| `seguimientoCotizaciones` | 3:00 PM diario | Lucy manda un WhatsApp de seguimiento por cada cotización sin cerrar con más de 48 horas |
+| `valoracionInactividad` | Cada 2 minutos | Pregunta la valoración de calidad en conversaciones de WhatsApp inactivas 10+ minutos |
+
+**"No lo puede hacer a diario como SPAM" (pedido explícito) — cómo se evita:**
+
+- `recordatoriosPolizas` respeta un enfriamiento mínimo (`diasMinimosEntreRecordatorios`,
+  7 días por defecto) entre recordatorios de una MISMA póliza — se registra en
+  `data/notificaciones-programadas.json` (no es un archivo de ejemplo, se genera solo).
+- `seguimientoCotizaciones` marca cada cotización como contactada
+  (`quote.seguimientoEnviado = true`) la primera vez — nunca se reintenta esa misma
+  cotización, haya o no teléfono disponible.
+- `valoracionInactividad` solo pregunta una vez por conversación (`record.ratingState`).
+
+Si no hay teléfono disponible para un destinatario (cliente sin `telefono` en su perfil,
+por ejemplo), simplemente se omite — nunca se inventa un contacto. Con Twilio sin
+configurar, las tareas corren igual (se registran en el log del servidor) pero no
+envían nada realmente, mismo criterio que el resto del proyecto.
+
+### Aprendizaje de preguntas frecuentes
+
+Cuando el usuario le dice a Lucy que no respondió bien ("eso no es lo que pregunté", "no
+me entendiste", etc. — ver `DISSATISFACTION_TRIGGER_PHRASES`) o pide hablar con un
+asesor humano, se registra automáticamente un "gap de conocimiento" en
+`data/gaps-conocimiento.json`: la pregunta original del usuario, la respuesta de Lucy que
+no sirvió, y qué disparó el registro — usando el par pregunta/respuesta ya presente en el
+historial de esa misma conversación (`registrarGapConocimiento` en `server.js`).
+
+Desde la pestaña **"❓ Preguntas sin respuesta"** del panel `/admin` el equipo puede
+revisarlas, dejar notas, y marcarlas como resueltas una vez que se mejora el
+`SYSTEM_PROMPT` para cubrir ese caso.
+
+### Modo supervisor
+
+Desde el detalle de una conversación en `/admin`, un supervisor puede:
+
+- **Ver en vivo** — un stream SSE (`GET /api/admin/conversations/:id/live`) muestra cada
+  mensaje nuevo (de cualquier rol) a medida que ocurre, sin refrescar el modal.
+- **Enviar un mensaje como Lucy** ("shadow messaging") — se guarda y se le entrega al
+  usuario exactamente como cualquier otro mensaje de Lucy (sin ninguna marca visible para
+  él); en el panel se distingue con una etiqueta "· equipo" solo para uso interno.
+- **Tomar control total** — mientras está activo, `/api/chat` y el webhook de WhatsApp
+  dejan de llamar a Claude o a cualquier flujo automático para esa conversación: el
+  usuario recibe un mensaje corto de espera y el supervisor le responde manualmente
+  (con "shadow messaging", arriba) hasta que suelta el control.
+- **Dejar notas internas** — texto visible solo en `/admin`, nunca se le muestra al
+  usuario ni se le envía a Claude (independiente de las notas del perfil del cliente).
+
+**Cómo llega un mensaje "en vivo" al widget web sin que el usuario haya escrito nada**
+(algo que el modelo normal de petición/respuesta de `/api/chat` no permite por sí solo):
+el widget abre, al cargar, una conexión SSE persistente propia (`GET /api/chat/live`,
+ver `connectLiveStream()` en `chatbot.js`) que se mantiene mientras la página esté
+abierta — a diferencia de `POST /api/chat`, que es una petición corta por cada mensaje.
+Por WhatsApp no hace falta nada de esto: un mensaje del supervisor se envía directo por
+la API de Twilio, igual que cualquier respuesta de Lucy.
+
 ## Panel de administración (`/admin`)
 
 Con el servidor corriendo, entra a:
@@ -670,6 +800,14 @@ intencional, para que el panel nunca quede accesible con una contraseña vacía.
 - **Pestaña "📝 Emisiones"** — solicitudes de emisión de póliza enviadas desde el
   [portal de corredores](#portal-de-corredores-corredor): aprobarlas o rechazarlas
   dispara una notificación en tiempo real al corredor que las envió.
+- **Pestaña "❓ Preguntas sin respuesta"** — gaps de conocimiento registrados solos por
+  el [motor de inteligencia](#motor-de-inteligencia): revisar, dejar notas, marcar
+  como resueltas.
+- **Modo supervisor** — desde el detalle de cualquier conversación: verla en vivo,
+  tomar control total, mandar un mensaje como si lo hubiera escrito Lucy ("shadow
+  messaging") y dejar notas internas — ver [Modo supervisor](#modo-supervisor).
+  También se ve la valoración de calidad (⭐ 1-5) y si quedó escalada (tono molesto
+  detectado) — columna "Valoración" y filtro dedicado en la tabla de conversaciones.
 - **Pestaña "⚙️ Cotizador"** — editor no-code de las tarifas, tasas y textos del
   cotizador automático (ver sección anterior).
 - **Pestaña "📊 Reportes"** — dashboard de métricas y gráficos (ver sección

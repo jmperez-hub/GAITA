@@ -82,6 +82,7 @@
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-clientes">👤 Clientes</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-siniestros">🚨 Siniestros</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-emisiones">📝 Emisiones</button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-gaps">❓ Preguntas sin respuesta</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-quoter">⚙️ Cotizador</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-reports">📊 Reportes</button>
         </nav>
@@ -138,6 +139,15 @@
             </select>
           </label>
 
+          <label class="lo-admin-toolbar-field">
+            <span>Valoración</span>
+            <select id="lo-admin-filter-revision" class="lo-admin-input">
+              <option value="">Todas</option>
+              <option value="revision">Requieren revisión (⭐ ≤ 2)</option>
+              <option value="escalado">Escaladas (tono molesto)</option>
+            </select>
+          </label>
+
           <button type="button" id="lo-admin-clear-filters" class="lo-admin-btn-ghost">Limpiar filtros</button>
           <div class="lo-admin-toolbar-spacer"></div>
           <button type="button" id="lo-admin-refresh" class="lo-admin-btn-ghost" title="Actualizar">
@@ -160,6 +170,7 @@
                   <th>Ramos mencionados</th>
                   <th>Asesor solicitado</th>
                   <th>Cotización</th>
+                  <th>Valoración</th>
                   <th>Vista previa</th>
                 </tr>
               </thead>
@@ -343,6 +354,61 @@
           <div class="lo-admin-loading" id="lo-emisiones-loading">Cargando solicitudes…</div>
           <div class="lo-admin-empty" id="lo-emisiones-empty" hidden>
             Todavía no hay solicitudes de emisión — aparecerán aquí en cuanto un corredor envíe una desde su portal.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: gaps de conocimiento ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-gaps" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Preguntas sin respuesta</strong>
+          <p>
+            Se registran solas cuando el usuario le dice a Lucy que no respondió bien, o pide hablar con un
+            asesor humano — revísalas para mejorar el system prompt (ver <code>SYSTEM_PROMPT</code> en
+            <code>server.js</code>).
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-gaps-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar en la pregunta o la respuesta..."
+          />
+          <label class="lo-admin-toolbar-field">
+            <span>Estado</span>
+            <select id="lo-gaps-filter-estado" class="lo-admin-input">
+              <option value="">Todas</option>
+              <option value="pendiente">Pendientes de revisar</option>
+              <option value="resuelto">Ya revisadas</option>
+            </select>
+          </label>
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-gaps-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Canal</th>
+                  <th>Pregunta del usuario</th>
+                  <th>Respuesta de Lucy</th>
+                  <th>Disparador</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="lo-gaps-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-gaps-loading">Cargando…</div>
+          <div class="lo-admin-empty" id="lo-gaps-empty" hidden>
+            No hay preguntas sin respuesta registradas todavía — buena señal. 🎉
           </div>
         </section>
       </main>
@@ -695,6 +761,23 @@
         </button>
       </div>
       <div class="lo-admin-modal-body" id="lo-emision-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: detalle de gap de conocimiento ================= -->
+  <div id="lo-gap-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-gap-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Detalle de la pregunta sin respuesta">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title">Pregunta sin respuesta</div>
+          <div class="lo-admin-modal-meta" id="lo-gap-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-gap-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-gap-modal-body"></div>
     </div>
   </div>
 

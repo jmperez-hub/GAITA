@@ -24,6 +24,12 @@ conversations.json
 # no credenciales reales.)
 /data/emisiones.json
 
+# Preguntas que Lucy no respondió bien (motor de inteligencia) — puede contener texto
+# real de clientes, no versionar. Estado operativo de las tareas programadas
+# (recordatorios de pólizas ya enviados) — no es data de ejemplo, no versionar.
+/data/gaps-conocimiento.json
+/data/notificaciones-programadas.json
+
 # Estado interno de la sesión de Claude Code (lock de tareas programadas) — no es
 # parte del proyecto, no versionar.
 .claude/scheduled_tasks.lock

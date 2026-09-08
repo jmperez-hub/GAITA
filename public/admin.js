@@ -46,6 +46,8 @@
     siniestrosFiltered: [],
     emisiones: [],
     emisionesFiltered: [],
+    gaps: [],
+    gapsFiltered: [],
   };
 
   function qs(id) {
@@ -206,6 +208,7 @@
     const channel = qs("lo-admin-filter-channel").value;
     const ramo = qs("lo-admin-filter-ramo").value;
     const advisor = qs("lo-admin-filter-advisor").value;
+    const revisionFilter = qs("lo-admin-filter-revision").value;
 
     state.filtered = state.conversations.filter((c) => {
       if (search) {
@@ -219,6 +222,8 @@
       if (ramo && !(c.ramos || []).includes(ramo)) return false;
       if (advisor === "si" && !c.advisorRequested) return false;
       if (advisor === "no" && c.advisorRequested) return false;
+      if (revisionFilter === "revision" && !c.requiereRevision) return false;
+      if (revisionFilter === "escalado" && !c.escalado) return false;
       return true;
     });
 
@@ -277,6 +282,19 @@
           ? '<span class="lo-admin-attach-icon" title="Esta conversación tiene adjuntos">📎</span>'
           : "";
 
+        // Valoración de calidad + escalamiento (ver classifyIntentAndEmotion/handleRatingGate
+        // en server.js) — badge rojo si requiere revisión (⭐ ≤ 2) o quedó escalada
+        // (tono molesto detectado), badge verde con la nota si ya se valoró bien.
+        let ratingHtml = "—";
+        if (c.rating != null) {
+          ratingHtml = `<span class="lo-admin-badge ${c.rating <= 2 ? "lo-admin-badge-vencida" : "lo-admin-badge-vigente"}">⭐ ${c.rating}/5</span>`;
+        } else if (c.requiereRevision) {
+          ratingHtml = '<span class="lo-admin-badge lo-admin-badge-vencida">Revisar</span>';
+        }
+        if (c.escalado) {
+          ratingHtml += ' <span class="lo-admin-badge lo-admin-badge-mayor">🚨</span>';
+        }
+
         return `
           <tr data-id="${escapeHtml(c.id)}">
             <td>${channelHtml(c)}</td>
@@ -286,6 +304,7 @@
             <td>${ramosHtml}</td>
             <td>${advisorHtml}</td>
             <td>${quoteHtml}</td>
+            <td>${ratingHtml}</td>
             <td class="lo-admin-cell-preview" title="${escapeHtml(c.preview || "")}">${attachIcon}${escapeHtml(
           c.preview || "—"
         )}</td>
@@ -303,11 +322,16 @@
   // Detalle de conversación (modal)
   // -------------------------------------------------------------------------
 
+  let currentConversationId = null;
+  let liveEventSource = null;
+
   async function openDetail(id) {
     const modal = qs("lo-admin-modal");
     const body = qs("lo-admin-modal-body");
     const meta = qs("lo-admin-modal-meta");
 
+    stopLiveMode(); // por si quedó una conexión abierta de la conversación anterior
+    currentConversationId = id;
     modal.hidden = false;
     body.innerHTML = '<div class="lo-admin-loading">Cargando conversación…</div>';
     meta.textContent = "";
@@ -322,6 +346,29 @@
         err.message || "Error al cargar la conversación."
       )}</div>`;
     }
+  }
+
+  function messageRowHtml(m) {
+    const isUser = m.role === "user";
+    const bubbleClass = isUser ? "lo-msg-user" : "lo-msg-bot";
+    const timeLabel = m.time ? formatTime(m.time) : "";
+    const avatar = isUser
+      ? ""
+      : `<div class="lo-avatar lo-avatar-sm">${AVATAR_SVG}<img src="lucy-avatar.png" alt="" onerror="this.remove()" /></div>`;
+    // `staffAuthored` (ver POST .../message) se marca SOLO para el equipo — al usuario
+    // le llegó igual que cualquier otro mensaje de Lucy ("shadow messaging").
+    const staffTag = m.staffAuthored ? ' <span class="lo-admin-staff-tag">· equipo</span>' : "";
+    return `
+      <div class="lo-msg-row ${isUser ? "lo-row-user" : "lo-row-bot"}">
+        ${avatar}
+        <div class="lo-msg-col">
+          ${attachmentHtml(m.attachment)}
+          <div class="lo-msg ${bubbleClass}">${escapeHtml(m.content)}</div>
+          ${attachmentHtml(m.media)}
+          <span class="lo-msg-time">${escapeHtml(timeLabel)}${staffTag}</span>
+        </div>
+      </div>
+    `;
   }
 
   function renderDetail(conversation) {
@@ -357,35 +404,168 @@
     }
 
     const messages = conversation.messages || [];
-    if (messages.length === 0) {
-      body.innerHTML = '<div class="lo-admin-empty">Esta conversación no tiene mensajes.</div>';
+    const messagesHtml = messages.length
+      ? messages.map(messageRowHtml).join("")
+      : '<div class="lo-admin-empty">Esta conversación no tiene mensajes.</div>';
+
+    body.innerHTML =
+      supervisorBarHtml(summary) + `<div id="lo-admin-live-messages">${messagesHtml}</div>` + renderQuotesSection(conversation.quotes) + shadowComposerHtml();
+    body.scrollTop = 0;
+
+    wireSupervisorControls(conversation.id, summary);
+  }
+
+  // -------------------------------------------------------------------------
+  // Modo supervisor: ver en vivo, tomar control, "shadow messaging", notas internas.
+  // -------------------------------------------------------------------------
+
+  function supervisorBarHtml(summary) {
+    const escaladoBadge = summary && summary.escalado ? '<span class="lo-admin-badge lo-admin-badge-mayor">🚨 Escalado</span>' : "";
+    const ratingBadge =
+      summary && summary.rating != null
+        ? `<span class="lo-admin-badge ${summary.rating <= 2 ? "lo-admin-badge-vencida" : "lo-admin-badge-vigente"}">⭐ ${summary.rating}/5</span>`
+        : "";
+    const revisionBadge =
+      summary && summary.requiereRevision ? '<span class="lo-admin-badge lo-admin-badge-vencida">Requiere revisión</span>' : "";
+    const controlActivo = Boolean(summary && summary.controladoPorHumano);
+
+    return `
+      <div class="lo-admin-supervisor-bar">
+        <button type="button" class="lo-admin-btn-ghost" id="lo-admin-live-toggle">🔴 Ver en vivo</button>
+        <button type="button" class="lo-admin-btn-ghost ${controlActivo ? "lo-admin-control-active" : ""}" id="lo-admin-control-toggle">
+          ${controlActivo ? "🔓 Soltar control" : "🧑‍💼 Tomar control"}
+        </button>
+        ${escaladoBadge} ${ratingBadge} ${revisionBadge}
+      </div>
+      <div class="lo-admin-supervisor-notes">
+        <label for="lo-admin-conv-notas">Notas internas (solo el equipo, no las ve el cliente)</label>
+        <textarea id="lo-admin-conv-notas" rows="2" maxlength="2000">${escapeHtml((summary && summary.notasInternas) || "")}</textarea>
+        <button type="button" class="lo-admin-btn-ghost" id="lo-admin-notas-save">💾 Guardar notas</button>
+        <span class="lo-quoter-save-status" id="lo-admin-notas-status" hidden></span>
+      </div>
+    `;
+  }
+
+  function shadowComposerHtml() {
+    return `
+      <div class="lo-admin-shadow-composer">
+        <input type="text" id="lo-admin-shadow-input" placeholder="Escribe un mensaje — se envía como si lo hubiera escrito Lucy..." maxlength="4000" />
+        <button type="button" class="lo-admin-btn-primary" id="lo-admin-shadow-send">Enviar</button>
+      </div>
+      <span class="lo-quoter-save-status" id="lo-admin-shadow-status" hidden></span>
+    `;
+  }
+
+  function wireSupervisorControls(conversationId, summary) {
+    qs("lo-admin-live-toggle").addEventListener("click", () => toggleLiveMode(conversationId));
+    qs("lo-admin-control-toggle").addEventListener("click", () => toggleControl(conversationId, summary));
+    qs("lo-admin-notas-save").addEventListener("click", () => saveConversationNotes(conversationId));
+    qs("lo-admin-shadow-send").addEventListener("click", () => sendShadowMessage(conversationId));
+    qs("lo-admin-shadow-input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") sendShadowMessage(conversationId);
+    });
+  }
+
+  function toggleLiveMode(conversationId) {
+    const btn = qs("lo-admin-live-toggle");
+    if (liveEventSource) {
+      stopLiveMode();
+      if (btn) btn.textContent = "🔴 Ver en vivo";
       return;
     }
+    liveEventSource = new EventSource(`/api/admin/conversations/${encodeURIComponent(conversationId)}/live`);
+    liveEventSource.addEventListener("message", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        const container = qs("lo-admin-live-messages");
+        if (!container) return;
+        container.insertAdjacentHTML("beforeend", messageRowHtml(msg));
+        const body = qs("lo-admin-modal-body");
+        if (body) body.scrollTop = body.scrollHeight;
+      } catch (_e) {
+        /* evento malformado — se ignora */
+      }
+    });
+    if (btn) btn.textContent = "⏹️ Detener vista en vivo";
+  }
 
-    const messagesHtml = messages
-      .map((m) => {
-        const isUser = m.role === "user";
-        const bubbleClass = isUser ? "lo-msg-user" : "lo-msg-bot";
-        const timeLabel = m.time ? formatTime(m.time) : "";
-        const avatar = isUser
-          ? ""
-          : `<div class="lo-avatar lo-avatar-sm">${AVATAR_SVG}<img src="lucy-avatar.png" alt="" onerror="this.remove()" /></div>`;
-        return `
-          <div class="lo-msg-row ${isUser ? "lo-row-user" : "lo-row-bot"}">
-            ${avatar}
-            <div class="lo-msg-col">
-              ${attachmentHtml(m.attachment)}
-              <div class="lo-msg ${bubbleClass}">${escapeHtml(m.content)}</div>
-              ${attachmentHtml(m.media)}
-              <span class="lo-msg-time">${escapeHtml(timeLabel)}</span>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
+  function stopLiveMode() {
+    if (liveEventSource) {
+      liveEventSource.close();
+      liveEventSource = null;
+    }
+  }
 
-    body.innerHTML = messagesHtml + renderQuotesSection(conversation.quotes);
-    body.scrollTop = 0;
+  async function toggleControl(conversationId, summary) {
+    const btn = qs("lo-admin-control-toggle");
+    const tomarControl = !(summary && summary.controladoPorHumano);
+    btn.disabled = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/control`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tomarControl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo actualizar el control de la conversación.");
+      if (summary) summary.controladoPorHumano = data.controladoPorHumano;
+      btn.textContent = data.controladoPorHumano ? "🔓 Soltar control" : "🧑‍💼 Tomar control";
+      btn.classList.toggle("lo-admin-control-active", data.controladoPorHumano);
+    } catch (err) {
+      alert(err.message || "Error al actualizar el control de la conversación.");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveConversationNotes(conversationId) {
+    const statusEl = qs("lo-admin-notas-status");
+    const notas = qs("lo-admin-conv-notas").value;
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/notes`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notas }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudieron guardar las notas.");
+      statusEl.textContent = "✓ Notas guardadas.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar las notas.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  async function sendShadowMessage(conversationId) {
+    const input = qs("lo-admin-shadow-input");
+    const statusEl = qs("lo-admin-shadow-status");
+    const text = input.value.trim();
+    if (!text) return;
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo enviar el mensaje.");
+      input.value = "";
+      const container = qs("lo-admin-live-messages");
+      if (container) {
+        container.insertAdjacentHTML("beforeend", messageRowHtml(data.message));
+        const body = qs("lo-admin-modal-body");
+        if (body) body.scrollTop = body.scrollHeight;
+      }
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al enviar el mensaje.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
   }
 
   /** Sección "Cotizaciones generadas" al final del detalle de la conversación. */
@@ -461,6 +641,8 @@
 
   function closeModal() {
     qs("lo-admin-modal").hidden = true;
+    stopLiveMode();
+    currentConversationId = null;
   }
 
   // -------------------------------------------------------------------------
@@ -572,12 +754,13 @@
   // Pestañas: Conversaciones ↔ Cotizador ↔ Reportes
   // -------------------------------------------------------------------------
 
-  const VIEWS = ["conversations", "clientes", "siniestros", "emisiones", "quoter", "reports"];
+  const VIEWS = ["conversations", "clientes", "siniestros", "emisiones", "gaps", "quoter", "reports"];
   let quoterViewLoaded = false;
   let reportsViewLoaded = false;
   let clientesViewLoaded = false;
   let siniestrosViewLoaded = false;
   let emisionesViewLoaded = false;
+  let gapsViewLoaded = false;
 
   function showView(name) {
     VIEWS.forEach((v) => {
@@ -604,6 +787,10 @@
     if (name === "emisiones" && !emisionesViewLoaded) {
       emisionesViewLoaded = true;
       loadEmisiones();
+    }
+    if (name === "gaps" && !gapsViewLoaded) {
+      gapsViewLoaded = true;
+      loadGaps();
     }
   }
 
@@ -1427,6 +1614,141 @@
   }
 
   // -------------------------------------------------------------------------
+  // Gaps de conocimiento ("❓ Preguntas sin respuesta") — se registran solos (ver
+  // registrarGapConocimiento en server.js); aquí solo se listan y se marcan revisados.
+  // -------------------------------------------------------------------------
+
+  async function loadGaps() {
+    qs("lo-gaps-loading").hidden = false;
+    qs("lo-gaps-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/gaps");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de preguntas sin respuesta.");
+      const data = await res.json();
+      state.gaps = data.gaps || [];
+      applyGapsFilter();
+    } catch (err) {
+      qs("lo-gaps-table-body").innerHTML = "";
+      qs("lo-gaps-empty").hidden = false;
+      qs("lo-gaps-empty").textContent = err.message || "Error al cargar las preguntas sin respuesta.";
+    } finally {
+      qs("lo-gaps-loading").hidden = true;
+    }
+  }
+
+  function applyGapsFilter() {
+    const term = normalizeSearch(qs("lo-gaps-search").value);
+    const estado = qs("lo-gaps-filter-estado").value;
+    state.gapsFiltered = state.gaps.filter((g) => {
+      const matchesTerm = !term || [g.pregunta, g.respuestaLucy].some((f) => normalizeSearch(f).includes(term));
+      const matchesEstado = !estado || (estado === "resuelto" ? g.resuelto : !g.resuelto);
+      return matchesTerm && matchesEstado;
+    });
+    renderGapsTable();
+  }
+
+  function renderGapsTable() {
+    const tbody = qs("lo-gaps-table-body");
+    const emptyEl = qs("lo-gaps-empty");
+
+    if (state.gapsFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.gaps.length === 0
+          ? "No hay preguntas sin respuesta registradas todavía — buena señal. 🎉"
+          : "No hay resultados que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.gapsFiltered
+      .map(
+        (g) => `
+          <tr data-id="${escapeAttr(g.id)}">
+            <td>${escapeHtml(formatDateTime(g.fecha))}</td>
+            <td>${g.canal === "whatsapp" ? "WhatsApp" : "💬 Web"}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.pregunta)}">${escapeHtml(g.pregunta || "—")}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.respuestaLucy)}">${escapeHtml(g.respuestaLucy || "—")}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.disparador)}">${escapeHtml(g.disparador || "—")}</td>
+            <td>${g.resuelto ? '<span class="lo-admin-badge lo-admin-badge-vigente">Revisada</span>' : '<span class="lo-admin-badge lo-admin-badge-por-vencer">Pendiente</span>'}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openGapDetail(row.getAttribute("data-id")));
+    });
+  }
+
+  let currentGapId = null;
+
+  function openGapDetail(id) {
+    const gap = state.gaps.find((g) => g.id === id);
+    if (!gap) return;
+    currentGapId = id;
+    qs("lo-gap-modal").hidden = false;
+    qs("lo-gap-modal-meta").textContent = `${formatDateTime(gap.fecha)} · ${gap.canal === "whatsapp" ? "WhatsApp" : "Chat web"}`;
+    qs("lo-gap-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint"><strong>Pregunta del usuario:</strong></div>
+        <p>${escapeHtml(gap.pregunta || "—")}</p>
+        <div class="lo-admin-hint"><strong>Respuesta de Lucy:</strong></div>
+        <p>${escapeHtml(gap.respuestaLucy || "—")}</p>
+        <div class="lo-admin-hint"><strong>Lo que disparó el registro:</strong> ${escapeHtml(gap.disparador || "—")}</div>
+
+        <label class="lo-quote-field">
+          <span>Notas del equipo</span>
+          <textarea id="lo-gap-field-notas" rows="3" maxlength="1000">${escapeHtml(gap.notas || "")}</textarea>
+        </label>
+        <label class="lo-quote-checkbox">
+          <input type="checkbox" id="lo-gap-field-resuelto" ${gap.resuelto ? "checked" : ""} />
+          <span>Ya revisado por el equipo</span>
+        </label>
+
+        <p class="lo-quoter-save-status" id="lo-gap-save-status" hidden></p>
+        <div class="lo-admin-card-save">
+          <button type="button" class="lo-admin-btn-primary" id="lo-gap-save-btn">💾 Guardar</button>
+        </div>
+      </div>
+    `;
+    qs("lo-gap-save-btn").addEventListener("click", () => saveGap(id));
+  }
+
+  async function saveGap(id) {
+    const statusEl = qs("lo-gap-save-status");
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/gaps/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resuelto: qs("lo-gap-field-resuelto").checked,
+          notas: qs("lo-gap-field-notas").value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar.");
+      const idx = state.gaps.findIndex((g) => g.id === id);
+      if (idx !== -1) state.gaps[idx] = data.gap;
+      statusEl.textContent = "✓ Guardado correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      applyGapsFilter();
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  function closeGapModal() {
+    qs("lo-gap-modal").hidden = true;
+    currentGapId = null;
+  }
+
+  // -------------------------------------------------------------------------
   // Configuración del cotizador (no-code) — tarifas RCV, tasas HCM, tipos de
   // bien patrimoniales y textos, editables sin tocar código.
   // -------------------------------------------------------------------------
@@ -2047,6 +2369,7 @@
     qs("lo-admin-filter-channel").addEventListener("change", applyFilters);
     qs("lo-admin-filter-ramo").addEventListener("change", applyFilters);
     qs("lo-admin-filter-advisor").addEventListener("change", applyFilters);
+    qs("lo-admin-filter-revision").addEventListener("change", applyFilters);
 
     qs("lo-admin-clear-filters").addEventListener("click", () => {
       qs("lo-admin-search").value = "";
@@ -2055,6 +2378,7 @@
       qs("lo-admin-filter-channel").value = "";
       qs("lo-admin-filter-ramo").value = "";
       qs("lo-admin-filter-advisor").value = "";
+      qs("lo-admin-filter-revision").value = "";
       applyFilters();
     });
 
@@ -2071,8 +2395,14 @@
     qs("lo-siniestro-modal-backdrop").addEventListener("click", closeSiniestroModal);
     qs("lo-emision-modal-close").addEventListener("click", closeEmisionModal);
     qs("lo-emision-modal-backdrop").addEventListener("click", closeEmisionModal);
+    qs("lo-gap-modal-close").addEventListener("click", closeGapModal);
+    qs("lo-gap-modal-backdrop").addEventListener("click", closeGapModal);
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
+      if (!qs("lo-gap-modal").hidden) {
+        closeGapModal();
+        return;
+      }
       if (!qs("lo-emision-modal").hidden) {
         closeEmisionModal();
         return;
@@ -2093,6 +2423,7 @@
     qs("lo-admin-tab-clientes").addEventListener("click", () => showView("clientes"));
     qs("lo-admin-tab-siniestros").addEventListener("click", () => showView("siniestros"));
     qs("lo-admin-tab-emisiones").addEventListener("click", () => showView("emisiones"));
+    qs("lo-admin-tab-gaps").addEventListener("click", () => showView("gaps"));
     qs("lo-admin-tab-quoter").addEventListener("click", () => showView("quoter"));
     qs("lo-admin-tab-reports").addEventListener("click", () => showView("reports"));
 
@@ -2110,6 +2441,11 @@
     qs("lo-emisiones-search").addEventListener("input", debounce(applyEmisionesFilter, 200));
     qs("lo-emisiones-filter-estado").addEventListener("change", applyEmisionesFilter);
     qs("lo-emisiones-refresh").addEventListener("click", loadEmisiones);
+
+    // Gaps de conocimiento (preguntas sin respuesta)
+    qs("lo-gaps-search").addEventListener("input", debounce(applyGapsFilter, 200));
+    qs("lo-gaps-filter-estado").addEventListener("change", applyGapsFilter);
+    qs("lo-gaps-refresh").addEventListener("click", loadGaps);
 
     // Editor del cotizador: tablas editables (agregar/eliminar filas)
     wireSimpleTable("lo-quoter-rcv-tarifas-body", "lo-quoter-rcv-tarifa-add", rcvTarifaRowHtml);

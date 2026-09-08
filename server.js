@@ -34,6 +34,10 @@ if (FFMPEG_BINARY_PATH) ffmpeg.setFfmpegPath(FFMPEG_BINARY_PATH);
 // WhatsApp para adjuntos de imagen (ver resizeMediaForWhatsapp).
 const sharp = require("sharp");
 const jwt = require("jsonwebtoken");
+const cron = require("node-cron");
+// Horarios/umbrales de las tareas programadas (recordatorios de pólizas, seguimiento
+// de cotizaciones, valoración por inactividad) — ver iniciarScheduler() más abajo.
+const schedulerConfig = require("./config/scheduler.config");
 // Acceso a los datos de pólizas (hoy data/polizas.json; POLIZAS_API_URL en el .env la
 // reemplaza por una API REST real el día que exista — ver services/polizas.service.js).
 const polizasService = require("./services/polizas.service");
@@ -51,6 +55,10 @@ const corredoresService = require("./services/corredores.service");
 
 const PORT = process.env.PORT || 3000;
 const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5";
+// Modelo rápido/económico para la clasificación de intención/emoción (ver
+// classifyIntentAndEmotion) — una llamada aparte, corta, antes de la respuesta real;
+// no necesita el modelo grande de conversación.
+const CLAUDE_FAST_MODEL = process.env.CLAUDE_FAST_MODEL || "claude-haiku-4-5-20251001";
 const COMPANY_NAME = process.env.COMPANY_NAME || "La Occidental C.A. de Seguros";
 const ASSISTANT_NAME = process.env.ASSISTANT_NAME || "Lucy";
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "info@laoccidental.com";
@@ -1547,6 +1555,303 @@ async function finalizeSiniestroFlow(record, flow) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Motor de inteligencia: clasificador de intención/emoción, valoración de
+// calidad y aprendizaje de preguntas sin respuesta (gaps de conocimiento).
+// ---------------------------------------------------------------------------
+
+const INTENT_LABELS = [
+  "cotizar",
+  "consultar_poliza",
+  "reportar_siniestro",
+  "consultar_siniestro",
+  "quejar",
+  "cancelar_poliza",
+  "renovar",
+  "hablar_humano",
+  "saludo",
+  "despedida",
+  "otra",
+];
+const EMOTION_LABELS = ["urgente", "molesto", "confundido", "satisfecho", "neutral"];
+
+const INTENT_CLASSIFIER_SYSTEM = `Clasificas el ÚLTIMO mensaje de un usuario que le escribe a una aseguradora venezolana. No respondas al usuario ni agregues explicación — SOLO un JSON con esta forma exacta, sin texto adicional ni bloque de código:
+{"intencion": "<una de: ${INTENT_LABELS.join(", ")}>", "emocion": "<una de: ${EMOTION_LABELS.join(", ")}>"}
+
+Guía breve:
+- "quejar": el usuario expresa una queja, insatisfacción o reclamo formal (no solo una duda).
+- "cancelar_poliza": quiere cancelar o dar de baja una póliza.
+- "renovar": quiere renovar una póliza (no cotizar una nueva).
+- "hablar_humano": pide explícitamente hablar con una persona/asesor.
+- "emocion=urgente": el mensaje describe una emergencia en curso (accidente, robo, salud).
+- "emocion=molesto": tono de frustración/enojo, aunque no llegue a ser una queja formal.
+- "emocion=confundido": el usuario no entiende algo o pide que se lo expliquen más simple.
+- "emocion=satisfecho": agradecimiento o cierre positivo de la conversación.
+- Si no aplica ninguna con claridad, usa "otra" / "neutral".`;
+
+/**
+ * Clasifica intención y emoción del último mensaje del usuario con una llamada RÁPIDA
+ * y aparte a Claude (CLAUDE_FAST_MODEL) — nunca bloquea la respuesta real de Lucy: si
+ * tarda más de 3s, falla, o responde algo no parseable, se usa el valor por defecto
+ * ("otra"/"neutral") y se sigue igual. Solo se invoca para el flujo normal de
+ * conversación (después de los gates deterministas — identificación, siniestros,
+ * valoración — que ya saben exactamente qué está pasando sin necesidad de esto).
+ */
+async function classifyIntentAndEmotion(text) {
+  const fallback = { intencion: "otra", emocion: "neutral" };
+  if (!text || !text.trim()) return fallback;
+  try {
+    const response = await Promise.race([
+      anthropic.messages.create({
+        model: CLAUDE_FAST_MODEL,
+        max_tokens: 60,
+        system: INTENT_CLASSIFIER_SYSTEM,
+        messages: [{ role: "user", content: text.slice(0, 1000) }],
+      }),
+      new Promise((_resolve, reject) => setTimeout(() => reject(new Error("timeout de clasificación")), 3000)),
+    ]);
+    const raw = extractText(response).trim();
+    const match = raw.match(/\{[\s\S]*\}/);
+    const parsed = match ? JSON.parse(match[0]) : {};
+    return {
+      intencion: INTENT_LABELS.includes(parsed.intencion) ? parsed.intencion : "otra",
+      emocion: EMOTION_LABELS.includes(parsed.emocion) ? parsed.emocion : "neutral",
+    };
+  } catch (err) {
+    console.warn("[aviso] No se pudo clasificar intención/emoción (se sigue sin ella):", err.message);
+    return fallback;
+  }
+}
+
+// Contexto que se le agrega al system prompt de Claude según la intención/emoción
+// detectada — nunca reemplaza los flujos deterministas ya existentes (cotizar,
+// reportar_siniestro, consultar_poliza/consultar_siniestro ya se resuelven con datos
+// reales inyectados aparte, ver buildClientContextAddendum/buildSiniestrosContextAddendum
+// y el cotizador automático del widget), solo complementa el TONO de la respuesta.
+const INTENT_GUIDANCE = {
+  quejar:
+    "\n\nEl sistema detectó que este mensaje suena a una QUEJA o reclamo formal. Reconoce la frustración del " +
+    "cliente con empatía genuina (sin sonar robótica), pide disculpas si aplica, y dile con claridad que su " +
+    "caso quedará escalado para atención prioritaria de un asesor humano.",
+  cancelar_poliza:
+    "\n\nEl sistema detectó intención de CANCELAR una póliza. Pregúntale con amabilidad (nunca de forma " +
+    "insistente) el motivo, para que el equipo pueda mejorar — pero no lo presiones a quedarse. Indícale que " +
+    "un asesor se pondrá en contacto para procesar la cancelación formalmente; tú no puedes cancelarla por este medio.",
+  renovar:
+    "\n\nEl sistema detectó intención de RENOVAR una póliza (no cotizar una nueva). Si tiene pólizas reales " +
+    "registradas (ver el contexto del cliente más abajo), confirma cuál quiere renovar y ofrécele iniciar el " +
+    "proceso o canalizarlo con su corredor o un asesor.",
+  hablar_humano:
+    "\n\nEl sistema detectó que el cliente quiere hablar con una persona. Ofrécele de inmediato los canales de " +
+    `contacto (correo ${SUPPORT_EMAIL}${SUPPORT_PHONE ? ` o teléfono ${SUPPORT_PHONE}` : ""}), sin insistir en seguir ayudando tú primero.`,
+};
+
+const EMOTION_GUIDANCE = {
+  urgente:
+    "\n\nEl sistema detectó un tono URGENTE (posible emergencia en curso). Responde con calma pero priorizando " +
+    "acción inmediata: el siguiente paso concreto primero, explicaciones largas después.",
+  molesto:
+    "\n\nEl sistema detectó un tono MOLESTO o de frustración. Antes que cualquier otra cosa, reconoce esa " +
+    "frustración de forma calmada y genuina, e indícale que escalarás su caso para atención prioritaria.",
+  confundido:
+    "\n\nEl sistema detectó que el cliente está CONFUNDIDO. Usa lenguaje más simple, evita jerga técnica de " +
+    "seguros sin explicarla, y ofrece una explicación paso a paso.",
+};
+
+// Frases que, junto con emocion === "satisfecho", disparan la pregunta de valoración
+// de calidad al cierre de la conversación (ver "Al cerrar cada conversación" del
+// pedido original) — reutiliza FAREWELL_TRIGGER_PHRASES (definidas más abajo, junto al
+// resto de la lógica de audio) sin duplicar esa lista.
+const SATISFACTION_TRIGGER_PHRASES = [
+  "gracias",
+  "muchas gracias",
+  "mil gracias",
+  "excelente",
+  "genial",
+  "perfecto",
+  "eso era todo",
+  "eso es todo",
+  "nada mas",
+  "eso resuelve",
+];
+
+function isSatisfactionSignal(text, emocion) {
+  if (emocion === "satisfecho") return true;
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  return (
+    SATISFACTION_TRIGGER_PHRASES.some((p) => normalized.includes(normalizeText(p))) ||
+    FAREWELL_TRIGGER_PHRASES.some((p) => normalized.includes(normalizeText(p)))
+  );
+}
+
+const RATING_ASK_TEXT = "¿Pude ayudarte con algo más? Califica tu experiencia del 1 al 5 ⭐ (1 = mal, 5 = excelente).";
+
+/** Interpreta la respuesta del usuario a RATING_ASK_TEXT: acepta un dígito 1-5, el
+ *  número escrito en palabras, o una cadena de estrellas (⭐/★). `null` si no se pudo
+ *  interpretar como una valoración (el mensaje sigue su curso normal, ver
+ *  handleRatingGate). */
+function parseRating(text) {
+  const normalized = normalizeText(text);
+  const digitMatch = normalized.match(/\b([1-5])\b/);
+  if (digitMatch) return Number(digitMatch[1]);
+  const WORDS_TO_NUMBER = { uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5 };
+  for (const [word, n] of Object.entries(WORDS_TO_NUMBER)) {
+    if (normalized.includes(word)) return n;
+  }
+  const starCount = (text.match(/⭐|★/g) || []).length;
+  if (starCount >= 1 && starCount <= 5) return starCount;
+  return null;
+}
+
+/**
+ * Gate determinista para la respuesta a la pregunta de valoración (ver RATING_ASK_TEXT
+ * / dónde se dispara en /api/chat y el webhook de WhatsApp). Solo actúa si
+ * `record.ratingState === "asked"`; si el mensaje no se puede interpretar como una
+ * valoración, no bloquea la conversación — la deja seguir su curso normal (el usuario
+ * pudo simplemente seguir hablando de otra cosa).
+ */
+function handleRatingGate(record, userText) {
+  if (record.ratingState !== "asked") return { handled: false };
+  const rating = parseRating(userText);
+  if (rating == null) {
+    record.ratingState = "skipped";
+    return { handled: false };
+  }
+
+  record.ratingState = "done";
+  record.rating = rating;
+  record.requiereRevision = rating <= 2;
+
+  if (record.clienteId) {
+    const cliente = getClienteByCedula(record.clienteId);
+    if (cliente) {
+      const historial = (cliente.historialValoraciones || [])
+        .concat([{ fecha: new Date().toISOString(), valoracion: rating, sessionId: record.id }])
+        .slice(-20);
+      touchCliente(cliente.cedula, { ultimaValoracion: rating, historialValoraciones: historial });
+    }
+  }
+
+  const replyText =
+    rating >= 4
+      ? "¡Muchas gracias por tu valoración! 🙌 Cualquier otra cosa, aquí estoy."
+      : rating === 3
+        ? "Gracias por tu opinión, seguiremos mejorando. Si necesitas algo más, dime."
+        : "Gracias por avisarnos — un miembro de nuestro equipo revisará tu conversación para mejorar tu experiencia.";
+
+  return { handled: true, replyText };
+}
+
+// ---------------------------------------------------------------------------
+// Aprendizaje de preguntas frecuentes: registra cada vez que Lucy no respondió bien
+// (data/gaps-conocimiento.json) — mismo patrón de caché en memoria + cola de
+// escritura serializada que conversations.json/clientes.json.
+// ---------------------------------------------------------------------------
+
+const GAPS_CONOCIMIENTO_FILE = process.env.GAPS_CONOCIMIENTO_FILE
+  ? path.resolve(__dirname, process.env.GAPS_CONOCIMIENTO_FILE)
+  : path.join(__dirname, "data", "gaps-conocimiento.json");
+
+/** @type {any[]} */
+let gapsConocimientoCache = [];
+let gapsConocimientoWriteQueue = Promise.resolve();
+
+function loadGapsConocimientoFromDisk() {
+  try {
+    if (fs.existsSync(GAPS_CONOCIMIENTO_FILE)) {
+      const raw = fs.readFileSync(GAPS_CONOCIMIENTO_FILE, "utf8");
+      const parsed = raw.trim() ? JSON.parse(raw) : [];
+      gapsConocimientoCache = Array.isArray(parsed) ? parsed : [];
+    }
+  } catch (err) {
+    console.error(`[aviso] No se pudo leer ${path.basename(GAPS_CONOCIMIENTO_FILE)}, se iniciará vacío:`, err.message);
+    gapsConocimientoCache = [];
+  }
+}
+
+function persistGapsConocimiento() {
+  gapsConocimientoWriteQueue = gapsConocimientoWriteQueue.then(
+    () =>
+      new Promise((resolve) => {
+        const data = JSON.stringify(gapsConocimientoCache, null, 2);
+        fs.writeFile(GAPS_CONOCIMIENTO_FILE, data, "utf8", (err) => {
+          if (err) console.error("Error al guardar gaps-conocimiento.json:", err.message);
+          resolve();
+        });
+      })
+  );
+  return gapsConocimientoWriteQueue;
+}
+
+loadGapsConocimientoFromDisk();
+
+// Frases que indican que la respuesta anterior de Lucy NO satisfizo al usuario —
+// junto con pedir un asesor humano (ADVISOR_KEYWORDS, definidas más abajo), disparan
+// el registro de un "gap de conocimiento" para que el equipo revise y mejore el
+// system prompt (ver panel /admin, sección "❓ Preguntas sin respuesta").
+const DISSATISFACTION_TRIGGER_PHRASES = [
+  "eso no es lo que pregunte",
+  "no es lo que pregunte",
+  "no es lo que necesito",
+  "no me estas entendiendo",
+  "no me entendiste",
+  "no es eso",
+  "no es lo que dije",
+  "esa no es mi pregunta",
+  "no respondiste mi pregunta",
+  "no contestaste mi pregunta",
+  "eso no responde",
+];
+
+function detectsDissatisfaction(text) {
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  return DISSATISFACTION_TRIGGER_PHRASES.some((p) => normalized.includes(normalizeText(p)));
+}
+
+/**
+ * Registra un gap de conocimiento: toma la ÚLTIMA respuesta de Lucy y la pregunta del
+ * usuario que la originó (ya presentes en `record.messages`, antes de agregar la
+ * respuesta al mensaje actual) junto con el mensaje que disparó la insatisfacción.
+ * Nunca lanza — un fallo al registrar esto no debe interrumpir la conversación.
+ */
+async function registrarGapConocimiento(record, motivo) {
+  try {
+    const msgs = record.messages || [];
+    let lastAssistant = null;
+    let previousUserQuestion = null;
+    // Recorre hacia atrás DESDE ANTES del mensaje actual del usuario (el último de la
+    // lista) buscando el par (pregunta del usuario, respuesta de Lucy) inmediatamente
+    // anterior a este mensaje de insatisfacción.
+    for (let i = msgs.length - 2; i >= 0; i--) {
+      if (!lastAssistant && msgs[i].role === "assistant") {
+        lastAssistant = msgs[i];
+      } else if (lastAssistant && !previousUserQuestion && msgs[i].role === "user") {
+        previousUserQuestion = msgs[i];
+        break;
+      }
+    }
+    if (!lastAssistant) return; // no hay una respuesta previa que revisar (primer mensaje, etc.)
+
+    gapsConocimientoCache.push({
+      id: crypto.randomUUID(),
+      fecha: new Date().toISOString(),
+      sessionId: record.id,
+      canal: record.channel === "whatsapp" ? "whatsapp" : "web",
+      pregunta: previousUserQuestion ? previousUserQuestion.content.slice(0, 1000) : "",
+      respuestaLucy: lastAssistant.content.slice(0, 1500),
+      disparador: motivo.slice(0, 300),
+      resuelto: false,
+      notas: "",
+    });
+    gapsConocimientoCache = gapsConocimientoCache.slice(-500); // límite defensivo
+    await persistGapsConocimiento();
+  } catch (err) {
+    console.warn("[aviso] No se pudo registrar el gap de conocimiento:", err.message);
+  }
+}
+
 function sanitizeSessionId(raw) {
   if (typeof raw === "string" && /^[a-zA-Z0-9-]{8,80}$/.test(raw)) return raw;
   return crypto.randomUUID();
@@ -1664,6 +1969,16 @@ function toConversationSummary(record) {
     quoteRamos: Array.from(new Set(quotes.map((q) => q.ramo).filter(Boolean))),
     hasFormalRequest: quotes.some((q) => q.formalRequest),
     hasAttachments: record.messages.some((m) => Boolean(m.attachment)),
+    // Motor de inteligencia: última intención/emoción clasificadas, valoración de
+    // calidad (si ya se preguntó/respondió) y si quedó marcada para revisión manual
+    // (emocion="molesto" en algún turno, o valoración <= 2) — ver server.js#classifyIntentAndEmotion.
+    ultimaIntencion: record.ultimaIntencion || null,
+    ultimaEmocion: record.ultimaEmocion || null,
+    escalado: Boolean(record.escalado),
+    rating: record.rating != null ? record.rating : null,
+    requiereRevision: Boolean(record.requiereRevision),
+    notasInternas: record.notasInternas || "",
+    controladoPorHumano: Boolean(record.controladoPorHumano),
   };
 }
 
@@ -2750,6 +3065,275 @@ function iniciarChequeoVencimientosCorredores() {
 }
 
 // ---------------------------------------------------------------------------
+// Modo supervisor: un supervisor desde /admin puede ver una conversación EN VIVO,
+// escribir un mensaje que Lucy envía como suyo ("shadow messaging"), tomar control
+// total (pausa las respuestas automáticas) y dejar notas internas.
+//
+// Dos registros de streams SSE, mismo mecanismo que corredorEventStreams:
+//  - conversationEventStreams: la conexión persistente del propio WIDGET WEB (o de
+//    WhatsApp, que no la necesita porque ya es push-capable vía Twilio) — así puede
+//    recibir un mensaje del servidor SIN que el usuario haya escrito nada (shadow
+//    messaging), algo que el modelo normal de petición/respuesta de /api/chat no
+//    permite por sí solo.
+//  - adminConversationWatchers: la vista "🔴 En vivo" del panel /admin sobre una
+//    conversación puntual — recibe tanto los mensajes del usuario como los de Lucy
+//    (o del supervisor) a medida que ocurren, sin tener que refrescar el modal.
+// ---------------------------------------------------------------------------
+
+/** @type {Map<string, Set<import('express').Response>>} sessionId -> conexiones SSE del widget/WhatsApp */
+const conversationEventStreams = new Map();
+/** @type {Map<string, Set<import('express').Response>>} sessionId -> conexiones SSE de supervisores viendo esa conversación */
+const adminConversationWatchers = new Map();
+
+function registerStream(registry, key, res) {
+  if (!registry.has(key)) registry.set(key, new Set());
+  registry.get(key).add(res);
+}
+
+function unregisterStream(registry, key, res) {
+  const set = registry.get(key);
+  if (!set) return;
+  set.delete(res);
+  if (set.size === 0) registry.delete(key);
+}
+
+function notifyConversationStream(sessionId, event, data) {
+  const set = conversationEventStreams.get(sessionId);
+  if (!set || set.size === 0) return;
+  for (const res of set) {
+    try {
+      sendSse(res, event, data);
+    } catch (_err) {
+      // conexión ya cerrada — se limpia sola en el evento "close" del stream
+    }
+  }
+}
+
+/** Le avisa a cualquier supervisor viendo esta conversación en vivo que hay un
+ *  mensaje nuevo (de cualquier rol) — `message` es la entrada tal cual se guarda en
+ *  `record.messages` (role/content/time/attachment/media). */
+function notifyAdminWatchers(sessionId, message) {
+  const set = adminConversationWatchers.get(sessionId);
+  if (!set || set.size === 0) return;
+  for (const res of set) {
+    try {
+      sendSse(res, "message", message);
+    } catch (_err) {
+      // conexión ya cerrada — se limpia sola en el evento "close" del stream
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tareas programadas (node-cron) — ver config/scheduler.config.js para horarios y
+// umbrales. Tres tareas: recordatorios de pólizas por vencer, seguimiento de
+// cotizaciones sin cerrar, y valoración de calidad por inactividad (solo WhatsApp).
+// ---------------------------------------------------------------------------
+
+// Enfriamiento entre recordatorios de una misma póliza (data/notificaciones-programadas.json)
+// — es lo que evita el "SPAM diario" pedido explícitamente: aunque la tarea corra
+// todos los días a las 9am, una póliza dada solo se vuelve a notificar después de
+// `diasMinimosEntreRecordatorios` días (ver config/scheduler.config.js).
+const NOTIFICACIONES_PROGRAMADAS_FILE = process.env.NOTIFICACIONES_PROGRAMADAS_FILE
+  ? path.resolve(__dirname, process.env.NOTIFICACIONES_PROGRAMADAS_FILE)
+  : path.join(__dirname, "data", "notificaciones-programadas.json");
+
+let notificacionesProgramadasCache = null;
+let notificacionesProgramadasWriteQueue = Promise.resolve();
+
+function getNotificacionesProgramadas() {
+  if (!notificacionesProgramadasCache) {
+    try {
+      const raw = fs.existsSync(NOTIFICACIONES_PROGRAMADAS_FILE) ? fs.readFileSync(NOTIFICACIONES_PROGRAMADAS_FILE, "utf8") : "";
+      notificacionesProgramadasCache = raw.trim() ? JSON.parse(raw) : {};
+    } catch (err) {
+      console.error(`[aviso] No se pudo leer ${path.basename(NOTIFICACIONES_PROGRAMADAS_FILE)}, se iniciará vacío:`, err.message);
+      notificacionesProgramadasCache = {};
+    }
+  }
+  return notificacionesProgramadasCache;
+}
+
+function persistNotificacionesProgramadas() {
+  notificacionesProgramadasWriteQueue = notificacionesProgramadasWriteQueue.then(
+    () =>
+      new Promise((resolve) => {
+        const data = JSON.stringify(getNotificacionesProgramadas(), null, 2);
+        fs.writeFile(NOTIFICACIONES_PROGRAMADAS_FILE, data, "utf8", (err) => {
+          if (err) console.error("Error al guardar notificaciones-programadas.json:", err.message);
+          resolve();
+        });
+      })
+  );
+  return notificacionesProgramadasWriteQueue;
+}
+
+function debeEnviarRecordatorioPoliza(numeroPoliza, diasMinimos) {
+  const ultimo = getNotificacionesProgramadas()[numeroPoliza];
+  if (!ultimo) return true;
+  const diasDesde = (Date.now() - new Date(ultimo).getTime()) / (24 * 60 * 60 * 1000);
+  return diasDesde >= diasMinimos;
+}
+
+function marcarRecordatorioPolizaEnviado(numeroPoliza) {
+  getNotificacionesProgramadas()[numeroPoliza] = new Date().toISOString();
+  return persistNotificacionesProgramadas();
+}
+
+/**
+ * Tarea 9:00 AM: por cada póliza que vence dentro de `diasAntesVencimiento` días
+ * (y no está ya vencida), envía un WhatsApp al cliente (si tiene teléfono en su
+ * memoria persistente) y a su corredor (si tiene cuenta en el portal /corredor) —
+ * ver "RESPUESTAS PROACTIVAS PROGRAMADAS" del pedido original.
+ */
+async function enviarRecordatoriosPolizasPorVencer() {
+  const cfg = schedulerConfig.recordatoriosPolizas;
+  if (!cfg.enabled) return;
+
+  const todas = await polizasService.listarTodas();
+  let enviados = 0;
+  for (const poliza of todas) {
+    const vigencia = polizasService.verificarVigencia(poliza);
+    if (vigencia.vencida || !vigencia.porVencer) continue;
+    if (vigencia.diasRestantes > cfg.diasAntesVencimiento) continue;
+    if (!debeEnviarRecordatorioPoliza(poliza.numero, cfg.diasMinimosEntreRecordatorios)) continue;
+
+    const ramoLabel = POLIZA_RAMO_LABELS[poliza.ramo] || poliza.ramo;
+    let enviadoAlguno = false;
+
+    const cliente = getClienteByCedula(poliza.cedula);
+    const clienteTo = cliente ? toWhatsappAddress(cliente.telefono) : null;
+    if (clienteTo) {
+      await sendWhatsappMessage(
+        clienteTo,
+        `Hola ${poliza.titular.split(" ")[0]} 👋, te recordamos que tu póliza ${poliza.numero} (${ramoLabel}) vence el ` +
+          `${poliza.vigencia_fin} (en ${vigencia.diasRestantes} día(s)). Contáctanos para renovarla a tiempo y evitar quedar sin cobertura.`
+      );
+      enviadoAlguno = true;
+    }
+
+    if (poliza.corredor) {
+      const corredor = corredoresService.buscarPorNombre(poliza.corredor);
+      const corredorTo = corredor ? toWhatsappAddress(corredor.telefono) : null;
+      if (corredorTo) {
+        await sendWhatsappMessage(
+          corredorTo,
+          `Recordatorio: la póliza ${poliza.numero} (${ramoLabel}) de tu cliente ${poliza.titular} vence el ` +
+            `${poliza.vigencia_fin} (en ${vigencia.diasRestantes} día(s)).`
+        );
+        enviadoAlguno = true;
+      }
+    }
+
+    if (enviadoAlguno) {
+      await marcarRecordatorioPolizaEnviado(poliza.numero);
+      enviados++;
+    }
+  }
+  console.log(`[scheduler] Recordatorios de pólizas por vencer: ${enviados} póliza(s) notificada(s).`);
+}
+
+/**
+ * Tarea 3:00 PM: por cada cotización sin cerrar (`formalRequest` falso) que lleva más
+ * de `horasSinCerrar` horas abierta, Lucy manda un mensaje de seguimiento por
+ * WhatsApp. Se marca `quote.seguimientoEnviado` la primera vez — nunca se reintenta
+ * la misma cotización, haya o no teléfono disponible (evita seguir intentando
+ * indefinidamente sobre datos que no van a cambiar).
+ */
+async function enviarSeguimientoCotizaciones() {
+  const cfg = schedulerConfig.seguimientoCotizaciones;
+  if (!cfg.enabled) return;
+
+  const umbralMs = cfg.horasSinCerrar * 60 * 60 * 1000;
+  let procesadas = 0;
+  let huboEnvios = false;
+
+  for (const record of Object.values(conversationsCache)) {
+    if (!record.quotes) continue;
+    for (const quote of Object.values(record.quotes)) {
+      if (quote.formalRequest || quote.seguimientoEnviado) continue;
+      const edadMs = Date.now() - new Date(quote.createdAt).getTime();
+      if (Number.isNaN(edadMs) || edadMs < umbralMs) continue;
+
+      const cedula = (quote.contact && quote.contact.cedula) || record.clienteId;
+      const cliente = cedula ? getClienteByCedula(cedula) : null;
+      const to = cliente ? toWhatsappAddress(cliente.telefono) : record.channel === "whatsapp" ? record.phone : null;
+      if (to) {
+        const nombre = (quote.contact && quote.contact.nombre) || (cliente && cliente.nombre) || "";
+        await sendWhatsappMessage(
+          to,
+          `Hola${nombre ? " " + nombre.split(" ")[0] : ""} 👋, notamos que dejaste pendiente tu cotización de ` +
+            `${RAMO_LABELS[quote.ramo] || quote.ramo} con ${COMPANY_NAME}. ¿Te ayudamos a continuar, o tienes alguna duda?`
+        );
+        huboEnvios = true;
+      }
+
+      quote.seguimientoEnviado = true;
+      procesadas++;
+    }
+  }
+
+  if (huboEnvios) persistConversations();
+  console.log(`[scheduler] Seguimiento de cotizaciones sin cerrar: ${procesadas} procesada(s).`);
+}
+
+/**
+ * Tarea cada 2 minutos: pregunta la valoración de calidad (RATING_ASK_TEXT) en
+ * conversaciones de WhatsApp inactivas hace `minutosInactividad` minutos — el último
+ * mensaje fue de Lucy y el usuario no volvió a escribir desde entonces. Solo una vez
+ * por conversación (record.ratingState). Solo WhatsApp: el widget web no tiene una
+ * conexión abierta fuera de una petición activa para recibir esto (ver
+ * "Modo supervisor" para el mecanismo en vivo que sí puede empujar mensajes al chat web).
+ */
+async function preguntarValoracionPorInactividad() {
+  const cfg = schedulerConfig.valoracionInactividad;
+  if (!cfg.enabled) return;
+
+  const umbralMs = cfg.minutosInactividad * 60 * 1000;
+  const maxEdadMs = (cfg.maxHorasConversacion || 24) * 60 * 60 * 1000;
+  const ahora = Date.now();
+  let preguntadas = 0;
+
+  for (const record of Object.values(conversationsCache)) {
+    if (record.channel !== "whatsapp" || record.ratingState || !record.phone) continue;
+    const msgs = record.messages || [];
+    const lastMsg = msgs[msgs.length - 1];
+    if (!lastMsg || lastMsg.role !== "assistant") continue; // Lucy debe haber sido quien respondió último
+
+    const updatedMs = new Date(record.updatedAt).getTime();
+    if (Number.isNaN(updatedMs)) continue;
+    const inactivaMs = ahora - updatedMs;
+    if (inactivaMs < umbralMs || inactivaMs > maxEdadMs) continue;
+
+    await sendWhatsappMessage(record.phone, RATING_ASK_TEXT);
+    record.messages.push({ role: "assistant", content: RATING_ASK_TEXT, time: new Date().toISOString() });
+    record.ratingState = "asked";
+    touchConversationRecord(record);
+    preguntadas++;
+  }
+  if (preguntadas > 0) console.log(`[scheduler] Valoración por inactividad: ${preguntadas} conversación(es) preguntada(s).`);
+}
+
+function iniciarScheduler() {
+  const jobs = [
+    [schedulerConfig.recordatoriosPolizas, enviarRecordatoriosPolizasPorVencer, "recordatoriosPolizas"],
+    [schedulerConfig.seguimientoCotizaciones, enviarSeguimientoCotizaciones, "seguimientoCotizaciones"],
+    [schedulerConfig.valoracionInactividad, preguntarValoracionPorInactividad, "valoracionInactividad"],
+  ];
+  for (const [cfg, fn, nombre] of jobs) {
+    if (!cfg || !cfg.enabled) continue;
+    cron.schedule(
+      cfg.cronExpression,
+      () => {
+        fn().catch((err) => console.error(`[scheduler] Error en la tarea "${nombre}":`, err));
+      },
+      { timezone: schedulerConfig.timezone }
+    );
+  }
+  console.log(`[scheduler] Tareas programadas iniciadas (huso horario: ${schedulerConfig.timezone}).`);
+}
+
+// ---------------------------------------------------------------------------
 // App Express
 // ---------------------------------------------------------------------------
 
@@ -3172,6 +3756,42 @@ app.get("/uploads/:fileId", (req, res) => {
 });
 
 /**
+ * GET /api/chat/live?sessionId=X
+ * Modo supervisor: conexión SSE persistente del propio widget web (se abre una sola
+ * vez, al cargar el chat, y se mantiene mientras el usuario tenga la página abierta —
+ * a diferencia de POST /api/chat, que es una petición corta por cada mensaje). Es lo
+ * que le permite al widget recibir un mensaje del SERVIDOR sin que el usuario haya
+ * escrito nada — "shadow messaging" desde /admin (ver POST /api/admin/conversations/:id/message)
+ * — algo que el modelo normal de petición/respuesta no permite. Pública (sin
+ * autenticación): el propio sessionId, impredecible, cumple ese rol — mismo criterio
+ * de confianza que el resto del chat web anónimo.
+ */
+app.get("/api/chat/live", (req, res) => {
+  const sessionId = sanitizeSessionId(req.query.sessionId);
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  registerStream(conversationEventStreams, sessionId, res);
+  sendSse(res, "connected", { sessionId });
+
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(": keep-alive\n\n");
+    } catch (_err) {
+      clearInterval(keepAlive);
+    }
+  }, 25000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unregisterStream(conversationEventStreams, sessionId, res);
+  });
+});
+
+/**
  * POST /api/chat
  * Body: { messages: [{ role: "user" | "assistant", content: string }, ...], sessionId?: string }
  * Responde con un stream SSE de eventos:
@@ -3219,6 +3839,10 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   record.messages = resolvedMessages; // snapshot completo del historial enviado por el cliente
   conversationsCache[sessionId] = record;
 
+  // Modo supervisor: si hay un panel /admin viendo esta conversación EN VIVO, se le
+  // avisa del mensaje del usuario apenas llega (ver notifyAdminWatchers).
+  if (lastMsg && lastMsg.role === "user") notifyAdminWatchers(sessionId, lastMsg);
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
@@ -3234,6 +3858,25 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
 
   sendSse(res, "meta", { sessionId });
 
+  // --- Modo supervisor: si un supervisor tomó control total de esta conversación
+  // desde /admin, no se llama a Claude ni a ningún flujo automático — el usuario recibe
+  // un mensaje corto de espera y el supervisor le responde manualmente (ver
+  // POST /api/admin/conversations/:id/message, que sí llega al usuario en vivo por el
+  // stream que abre el widget — ver GET /api/chat/live).
+  if (record.controladoPorHumano) {
+    const holdingText = "Un asesor está revisando tu conversación — te responderá en breve. 🙂";
+    const holdingEntry = { role: "assistant", content: holdingText, time: new Date().toISOString() };
+    record.messages = [...record.messages, holdingEntry];
+    touchConversationRecord(record);
+    notifyAdminWatchers(sessionId, holdingEntry);
+    if (!clientClosed) {
+      sendSse(res, "delta", { text: holdingText });
+      sendSse(res, "done", {});
+      res.end();
+    }
+    return;
+  }
+
   // --- Apertura/seguimiento de un siniestro (ver handleSiniestroFlowGate) ---
   // Tiene prioridad sobre la identificación genérica de abajo — incluso como primer
   // mensaje de la conversación — porque el pedido original exige una respuesta empática
@@ -3241,6 +3884,7 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   const siniestroGate = await handleSiniestroFlowGate(record, lastUserEffectiveText, { canalPreferido: "web" });
   if (siniestroGate.handled) {
     touchConversationRecord(record);
+    notifyAdminWatchers(sessionId, { role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() });
     if (!clientClosed) {
       sendSse(res, "delta", { text: siniestroGate.replyText });
       if (siniestroGate.requestLocation) sendSse(res, "location_request", {});
@@ -3256,12 +3900,38 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
   const idGate = await handleClientIdentificationGate(record, lastUserEffectiveText, { canalPreferido: "web" });
   if (idGate.handled) {
     touchConversationRecord(record);
+    notifyAdminWatchers(sessionId, { role: "assistant", content: idGate.replyText, time: new Date().toISOString() });
     if (!clientClosed) {
       sendSse(res, "delta", { text: idGate.replyText });
       sendSse(res, "done", {});
       res.end();
     }
     return;
+  }
+
+  // --- Respuesta a la pregunta de valoración de calidad (ver RATING_ASK_TEXT) ---
+  // Determinista: si no se pudo interpretar como un número 1-5, handled queda en
+  // false y el mensaje sigue su curso normal (el usuario pudo simplemente seguir
+  // hablando de otra cosa en vez de responder la valoración).
+  const ratingGate = handleRatingGate(record, lastUserEffectiveText);
+  if (ratingGate.handled) {
+    touchConversationRecord(record);
+    notifyAdminWatchers(sessionId, { role: "assistant", content: ratingGate.replyText, time: new Date().toISOString() });
+    if (!clientClosed) {
+      sendSse(res, "delta", { text: ratingGate.replyText });
+      sendSse(res, "done", {});
+      res.end();
+    }
+    return;
+  }
+
+  // --- Aprendizaje de preguntas frecuentes: si el mensaje indica que la respuesta
+  // anterior de Lucy no sirvió (o pide un asesor), se registra como gap de
+  // conocimiento ANTES de generar la respuesta de este turno (usa el par
+  // pregunta/respuesta ya presente en el historial) — ver "❓ Preguntas sin
+  // respuesta" en /admin. Nunca bloquea ni cambia la respuesta normal de Claude.
+  if (detectsDissatisfaction(lastUserEffectiveText) || ADVISOR_KEYWORDS.some((kw) => normalizeText(lastUserEffectiveText).includes(kw))) {
+    await registrarGapConocimiento(record, lastUserEffectiveText);
   }
 
   const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
@@ -3304,8 +3974,25 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
     }
   }
 
+  // Clasificador de intención/emoción (ver classifyIntentAndEmotion) — una llamada
+  // rápida y aparte antes de la respuesta real, para ajustar tono/contexto sin
+  // reemplazar los flujos deterministas ya resueltos arriba.
+  const { intencion, emocion } = await classifyIntentAndEmotion(lastUserEffectiveText);
+  record.ultimaIntencion = intencion;
+  record.ultimaEmocion = emocion;
+  if (emocion === "molesto") record.escalado = true;
+
+  // ¿Corresponde preguntar la valoración de calidad al cierre? (ver RATING_ASK_TEXT) —
+  // solo si todavía no se le preguntó/respondió en esta conversación.
+  const shouldAskRating =
+    !record.ratingState && isSatisfactionSignal(lastUserEffectiveText, emocion);
+
   const clientContextAddendum =
-    buildClientContextAddendum(cliente, clientPolizas) + buildSiniestrosContextAddendum(clientSiniestros) + siniestroDocNote;
+    buildClientContextAddendum(cliente, clientPolizas) +
+    buildSiniestrosContextAddendum(clientSiniestros) +
+    siniestroDocNote +
+    (INTENT_GUIDANCE[intencion] || "") +
+    (EMOTION_GUIDANCE[emocion] || "");
   isAudioReply = isAudioReply || Boolean(TTS_AVAILABLE && cliente && cliente.preferenciaAudio);
 
   try {
@@ -3411,9 +4098,20 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
         }
       }
 
+      // Valoración de calidad: se agrega al final de la MISMA respuesta (no un mensaje
+      // aparte) — ver shouldAskRating más arriba. record.ratingState = "asked" hace que
+      // el próximo mensaje del usuario pase por handleRatingGate en vez del flujo normal.
+      if (assistantText && shouldAskRating && !clientClosed) {
+        const ratingSuffix = `\n\n${RATING_ASK_TEXT}`;
+        sendSse(res, "delta", { text: ratingSuffix });
+        assistantMsgEntry.content += ratingSuffix;
+        record.ratingState = "asked";
+      }
+
       if (!clientClosed) {
         sendSse(res, "done", {});
       }
+      if (assistantMsgEntry) notifyAdminWatchers(sessionId, assistantMsgEntry);
     }
 
     touchConversationRecord(record);
@@ -3657,6 +4355,22 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
   const userMessage = { role: "user", content: userText.slice(0, MAX_MESSAGE_LENGTH), time: new Date().toISOString() };
   if (attachmentEntry) userMessage.attachment = { fileId: attachmentEntry.fileId };
   record.messages.push(userMessage);
+  notifyAdminWatchers(phoneKey, userMessage);
+
+  // Modo supervisor: si un supervisor tomó control total de esta conversación desde
+  // /admin, no se ejecuta ningún flujo automático (ni bienvenida, ni menú, ni Claude)
+  // — se le avisa al supervisor y se responde con un mensaje corto de espera, igual
+  // criterio que /api/chat (ver ahí el comentario completo).
+  if (record.controladoPorHumano) {
+    const holdingText = "Un asesor está revisando tu conversación — te responderá en breve. 🙂";
+    const holdingEntry = { role: "assistant", content: holdingText, time: new Date().toISOString() };
+    record.messages.push(holdingEntry);
+    await sendWhatsappMessage(from, holdingText);
+    conversationsCache[phoneKey] = record;
+    touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, holdingEntry);
+    return;
+  }
 
   // Primer contacto: bienvenida + menú, siempre — sin llamar a Claude todavía.
   if (isFirstContact) {
@@ -3693,6 +4407,7 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     }
     conversationsCache[phoneKey] = record;
     touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, welcomeMsgEntry);
     return;
   }
 
@@ -3700,9 +4415,11 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
   if (isWhatsappMenuTrigger(userText)) {
     const menu = buildWhatsappMenuText();
     await sendWhatsappMessage(from, menu);
-    record.messages.push({ role: "assistant", content: menu, time: new Date().toISOString() });
+    const menuMsgEntry = { role: "assistant", content: menu, time: new Date().toISOString() };
+    record.messages.push(menuMsgEntry);
     conversationsCache[phoneKey] = record;
     touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, menuMsgEntry);
     return;
   }
 
@@ -3712,9 +4429,11 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
   const siniestroGate = await handleSiniestroFlowGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
   if (siniestroGate.handled) {
     await sendWhatsappMessage(from, siniestroGate.replyText);
-    record.messages.push({ role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() });
+    const siniestroMsgEntry = { role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() };
+    record.messages.push(siniestroMsgEntry);
     conversationsCache[phoneKey] = record;
     touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, siniestroMsgEntry);
     return;
   }
 
@@ -3724,11 +4443,31 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
   const idGate = await handleClientIdentificationGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
   if (idGate.handled) {
     await sendWhatsappMessage(from, idGate.replyText);
-    record.messages.push({ role: "assistant", content: idGate.replyText, time: new Date().toISOString() });
+    const idMsgEntry = { role: "assistant", content: idGate.replyText, time: new Date().toISOString() };
+    record.messages.push(idMsgEntry);
     conversationsCache[phoneKey] = record;
     touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, idMsgEntry);
     return;
   }
+
+  // Respuesta a la pregunta de valoración de calidad — mismo criterio que /api/chat.
+  const ratingGateWhatsapp = handleRatingGate(record, userText);
+  if (ratingGateWhatsapp.handled) {
+    await sendWhatsappMessage(from, ratingGateWhatsapp.replyText);
+    const ratingMsgEntry = { role: "assistant", content: ratingGateWhatsapp.replyText, time: new Date().toISOString() };
+    record.messages.push(ratingMsgEntry);
+    conversationsCache[phoneKey] = record;
+    touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, ratingMsgEntry);
+    return;
+  }
+
+  // Aprendizaje de preguntas frecuentes — mismo criterio que /api/chat.
+  if (detectsDissatisfaction(userText) || ADVISOR_KEYWORDS.some((kw) => normalizeText(userText).includes(kw))) {
+    await registrarGapConocimiento(record, userText);
+  }
+
   const clienteWhatsapp = record.clienteId ? getClienteByCedula(record.clienteId) : null;
   const clienteWhatsappPolizas = clienteWhatsapp ? await polizasService.buscarPorCedula(clienteWhatsapp.cedula) : [];
   const clienteWhatsappSiniestros = clienteWhatsapp ? await siniestrosService.listarPorCedula(clienteWhatsapp.cedula) : [];
@@ -3779,6 +4518,13 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     record.messages.push({ role: "assistant", content: echoMsg, time: new Date().toISOString() });
   }
 
+  // Clasificador de intención/emoción — mismo criterio que /api/chat.
+  const { intencion: intencionWhatsapp, emocion: emocionWhatsapp } = await classifyIntentAndEmotion(userText);
+  record.ultimaIntencion = intencionWhatsapp;
+  record.ultimaEmocion = emocionWhatsapp;
+  if (emocionWhatsapp === "molesto") record.escalado = true;
+  const shouldAskRatingWhatsapp = !record.ratingState && isSatisfactionSignal(userText, emocionWhatsapp);
+
   try {
     const anthropicMessages = await buildAnthropicMessages(resolvedMessages);
     const response = await anthropic.messages.create({
@@ -3789,7 +4535,9 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
         WHATSAPP_SYSTEM_ADDENDUM +
         buildClientContextAddendum(clienteWhatsapp, clienteWhatsappPolizas) +
         buildSiniestrosContextAddendum(clienteWhatsappSiniestros) +
-        siniestroDocNoteWhatsapp,
+        siniestroDocNoteWhatsapp +
+        (INTENT_GUIDANCE[intencionWhatsapp] || "") +
+        (EMOTION_GUIDANCE[emocionWhatsapp] || ""),
       output_config: { effort: "medium" },
       messages: anthropicMessages,
     });
@@ -3799,7 +4547,7 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
       await sendWhatsappMessage(from, declineMsg);
       record.messages.push({ role: "assistant", content: declineMsg, time: new Date().toISOString() });
     } else {
-      const text = extractText(response);
+      let text = extractText(response);
       if (text) {
         // Imagen/infografía del catálogo, ANTES del mensaje de texto (a diferencia del
         // video, que va después de un texto guionado propio) — se manda primero y
@@ -3818,6 +4566,14 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
             console.warn("[aviso] No se pudo enviar la imagen por WhatsApp:", err.message);
           }
           if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_MEDIA_KEY[matchedMedia.key]);
+        }
+
+        // Valoración de calidad — mismo criterio que /api/chat: se agrega al final de
+        // esta misma respuesta, y record.ratingState = "asked" hace que el próximo
+        // mensaje del usuario pase por handleRatingGate.
+        if (shouldAskRatingWhatsapp) {
+          text += `\n\n${RATING_ASK_TEXT}`;
+          record.ratingState = "asked";
         }
 
         await sendWhatsappMessageChunked(from, text);
@@ -3870,6 +4626,8 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
           }
           if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_VIDEO_KEY[matchedVideo.key]);
         }
+
+        notifyAdminWatchers(phoneKey, replyMsgEntry);
       }
     }
   } catch (err) {
@@ -4032,6 +4790,105 @@ app.get("/api/admin/conversations/:id", requireAdmin, (req, res) => {
     return res.status(404).json({ error: "Conversación no encontrada." });
   }
   res.json({ conversation: record });
+});
+
+/**
+ * GET /api/admin/conversations/:id/live
+ * Modo supervisor: stream SSE que empuja cada mensaje nuevo (de cualquier rol) de
+ * esta conversación en tiempo real, mientras el panel /admin la tenga abierta con la
+ * vista "🔴 En vivo" — ver notifyAdminWatchers.
+ */
+app.get("/api/admin/conversations/:id/live", requireAdmin, (req, res) => {
+  const sessionId = req.params.id;
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
+    "X-Accel-Buffering": "no",
+  });
+  registerStream(adminConversationWatchers, sessionId, res);
+  sendSse(res, "connected", { ok: true });
+
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(": keep-alive\n\n");
+    } catch (_err) {
+      clearInterval(keepAlive);
+    }
+  }, 25000);
+
+  req.on("close", () => {
+    clearInterval(keepAlive);
+    unregisterStream(adminConversationWatchers, sessionId, res);
+  });
+});
+
+/**
+ * POST /api/admin/conversations/:id/message
+ * "Shadow messaging": un supervisor escribe un mensaje que se guarda y se entrega como
+ * si lo hubiera escrito Lucy — al usuario le llega por el canal correspondiente: en
+ * vivo por el stream que mantiene abierto el widget web (ver GET /api/chat/live), o
+ * por WhatsApp si ese es el canal de la conversación.
+ */
+app.post("/api/admin/conversations/:id/message", requireAdmin, async (req, res) => {
+  const sessionId = req.params.id;
+  const record = conversationsCache[sessionId];
+  if (!record) {
+    return res.status(404).json({ error: "Conversación no encontrada." });
+  }
+  const body = req.body || {};
+  const text = typeof body.text === "string" ? body.text.trim().slice(0, MAX_MESSAGE_LENGTH) : "";
+  if (!text) {
+    return res.status(400).json({ error: "El mensaje no puede estar vacío." });
+  }
+
+  // `staffAuthored` es solo para el registro interno (se ve en /admin) — al usuario le
+  // llega igual que cualquier otro mensaje de Lucy, sin ninguna marca ("shadow messaging").
+  const entry = { role: "assistant", content: text, time: new Date().toISOString(), staffAuthored: true };
+  record.messages = [...(record.messages || []), entry];
+  touchConversationRecord(record);
+
+  notifyConversationStream(sessionId, "assistant-message", entry);
+  notifyAdminWatchers(sessionId, entry);
+
+  if (record.channel === "whatsapp" && record.phone) {
+    await sendWhatsappMessage(record.phone, text);
+  }
+
+  res.json({ ok: true, message: entry });
+});
+
+/**
+ * PATCH /api/admin/conversations/:id/control
+ * Tomar o soltar el control total de una conversación — mientras está tomada,
+ * /api/chat y el webhook de WhatsApp dejan de llamar a Claude o a cualquier flujo
+ * automático para esta conversación (ver record.controladoPorHumano).
+ */
+app.patch("/api/admin/conversations/:id/control", requireAdmin, (req, res) => {
+  const record = conversationsCache[req.params.id];
+  if (!record) {
+    return res.status(404).json({ error: "Conversación no encontrada." });
+  }
+  record.controladoPorHumano = Boolean((req.body || {}).tomarControl);
+  touchConversationRecord(record);
+  res.json({ ok: true, controladoPorHumano: record.controladoPorHumano });
+});
+
+/**
+ * PATCH /api/admin/conversations/:id/notes
+ * Notas internas del equipo sobre esta conversación — nunca se le muestran al usuario
+ * ni se le envían a Claude (a diferencia de las notas internas del PERFIL del cliente,
+ * ver /api/admin/clientes/:cedula, estas son por conversación puntual).
+ */
+app.patch("/api/admin/conversations/:id/notes", requireAdmin, (req, res) => {
+  const record = conversationsCache[req.params.id];
+  if (!record) {
+    return res.status(404).json({ error: "Conversación no encontrada." });
+  }
+  const body = req.body || {};
+  record.notasInternas = typeof body.notas === "string" ? body.notas.slice(0, 2000) : "";
+  touchConversationRecord(record);
+  res.json({ ok: true, notasInternas: record.notasInternas });
 });
 
 // ---------------------------------------------------------------------------
@@ -4614,6 +5471,29 @@ app.patch("/api/admin/emisiones/:id", requireAdmin, async (req, res) => {
   res.json({ ok: true, emision: enriquecerEmision(updated) });
 });
 
+// ---------------------------------------------------------------------------
+// Rutas — Panel de administración: gaps de conocimiento ("❓ Preguntas sin respuesta",
+// ver registrarGapConocimiento — se llenan solas cuando el usuario dice que Lucy no
+// respondió bien o pide un asesor humano).
+// ---------------------------------------------------------------------------
+
+app.get("/api/admin/gaps", requireAdmin, (_req, res) => {
+  const gaps = [...gapsConocimientoCache].sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+  res.json({ gaps });
+});
+
+app.patch("/api/admin/gaps/:id", requireAdmin, async (req, res) => {
+  const gap = gapsConocimientoCache.find((g) => g.id === req.params.id);
+  if (!gap) {
+    return res.status(404).json({ error: "Gap de conocimiento no encontrado." });
+  }
+  const body = req.body || {};
+  if (typeof body.resuelto === "boolean") gap.resuelto = body.resuelto;
+  if (typeof body.notas === "string") gap.notas = body.notas.slice(0, 1000);
+  await persistGapsConocimiento();
+  res.json({ ok: true, gap });
+});
+
 // Manejo de errores de CORS y otros errores no capturados en middlewares.
 app.use((err, _req, res, _next) => {
   console.error(err);
@@ -4635,6 +5515,11 @@ app.listen(PORT, () => {
 // Chequeo periódico de "pólizas por vencer en 7 días" para las notificaciones en
 // tiempo real del portal de corredores — ver iniciarChequeoVencimientosCorredores().
 iniciarChequeoVencimientosCorredores();
+
+// Tareas programadas (node-cron): recordatorios de pólizas, seguimiento de
+// cotizaciones y valoración por inactividad — ver iniciarScheduler() y
+// config/scheduler.config.js.
+iniciarScheduler();
 
 // En segundo plano (no bloquea el arranque): genera los posters/thumbnails que falten
 // para los videos del catálogo — ver ensureVideoPosters().

@@ -168,6 +168,45 @@
   }
 
   // -------------------------------------------------------------------------
+  // Modo supervisor: conexión SSE persistente (GET /api/chat/live) para poder recibir
+  // un mensaje del servidor SIN que el usuario haya escrito nada — "shadow messaging"
+  // desde /admin (ver server.js#notifyConversationStream). A diferencia del resto del
+  // chat (una petición corta por mensaje), esta conexión se abre UNA vez al cargar el
+  // widget y se mantiene abierta mientras la página siga abierta.
+  // -------------------------------------------------------------------------
+
+  let liveEventSource = null;
+
+  function deriveLiveUrl() {
+    if (CONFIG.liveUrl) return CONFIG.liveUrl;
+    return CONFIG.apiUrl.replace(/\/api\/chat\/?$/, "/api/chat/live");
+  }
+
+  function connectLiveStream() {
+    if (typeof window.EventSource !== "function" || !sessionId) return;
+    try {
+      if (liveEventSource) liveEventSource.close();
+      liveEventSource = new EventSource(`${deriveLiveUrl()}?sessionId=${encodeURIComponent(sessionId)}`);
+      liveEventSource.addEventListener("assistant-message", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (!data || typeof data.content !== "string" || !data.content) return;
+          appendMessageEl("assistant", data.content, data.time);
+          conversation.push({ role: "assistant", content: data.content, time: data.time || new Date().toISOString() });
+          saveHistory();
+        } catch (_e) {
+          /* evento malformado — se ignora, no debe romper el chat */
+        }
+      });
+      // EventSource reintenta la conexión solo ante un corte — no hace falta lógica
+      // adicional en onerror; el chat sigue funcionando normal (petición/respuesta)
+      // aunque este stream esté caído.
+    } catch (_e) {
+      /* el navegador no soporta EventSource, o falló al conectar */
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Construcción del DOM
   // -------------------------------------------------------------------------
 
@@ -2482,6 +2521,7 @@
     const root = buildWidget();
     conversation = loadHistory();
     sessionId = getOrCreateSessionId();
+    connectLiveStream(); // modo supervisor: recibe mensajes que el equipo mande desde /admin
     loadQuoterConfig(); // precarga en segundo plano — no bloquea el resto del widget
 
     renderQuickReplies();
