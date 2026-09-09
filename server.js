@@ -223,6 +223,27 @@ const WHATSAPP_VIDEO_MAX_BYTES = 16 * 1024 * 1024; // límite de adjuntos de Wha
 
 const VIDEO_CATALOG = [
   {
+    key: "bienvenida",
+    file: "bienvenida.mp4",
+    title: "Bienvenida a La Occidental",
+    // Sin triggers: no se activa por palabras clave, se usa específicamente en el
+    // mensaje de bienvenida (mismo criterio que la imagen "bienvenida" de
+    // MEDIA_CATALOG, a la que reemplaza en ese flujo — ver el primer contacto por
+    // WhatsApp y el saludo inicial del widget web).
+    triggers: [],
+    youtubeUrl: "",
+  },
+  {
+    key: "despedida",
+    file: "despedida.mp4",
+    title: "Despedida de Lucy",
+    // Sin triggers: no se activa por palabras clave, se usa específicamente cuando el
+    // cliente da por terminada la conversación — junto con RATING_ASK_TEXT (ver
+    // shouldAskRating / isSatisfactionSignal), no en el saludo inicial.
+    triggers: [],
+    youtubeUrl: "",
+  },
+  {
     key: "reportar-siniestro",
     file: "como-reportar-siniestro.mp4",
     title: "Cómo reportar un siniestro",
@@ -1977,6 +1998,9 @@ function isSatisfactionSignal(text, emocion) {
 }
 
 const RATING_ASK_TEXT = "¿Pude ayudarte con algo más? Califica tu experiencia del 1 al 5 ⭐ (1 = mal, 5 = excelente).";
+// Caption del video de despedida (VIDEO_CATALOG, key "despedida") que acompaña a
+// RATING_ASK_TEXT — ver shouldAskRating/shouldAskRatingWhatsapp más abajo.
+const DESPEDIDA_CAPTION = "¡Gracias por escribirnos! Fue un gusto ayudarte 💚";
 
 /** Interpreta la respuesta del usuario a RATING_ASK_TEXT: acepta un dígito 1-5, el
  *  número escrito en palabras, o una cadena de estrellas (⭐/★). `null` si no se pudo
@@ -4438,6 +4462,30 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
         sendSse(res, "delta", { text: ratingSuffix });
         assistantMsgEntry.content += ratingSuffix;
         record.ratingState = "asked";
+
+        // Video de despedida (VIDEO_CATALOG), junto con la pregunta de valoración —
+        // mismo patrón que el video explicativo (matchedVideo, arriba): un mensaje
+        // aparte y guionado, no generado por Claude.
+        const despedidaVideo = VIDEO_CATALOG.find((v) => v.key === "despedida");
+        const despedidaAttachment = despedidaVideo ? resolveVideoAttachment(despedidaVideo) : null;
+        if (despedidaAttachment) {
+          const despedidaMsgEntry = {
+            role: "assistant",
+            content: DESPEDIDA_CAPTION,
+            time: new Date().toISOString(),
+            attachment: despedidaAttachment,
+          };
+          record.messages = [...record.messages, despedidaMsgEntry];
+          if (!clientClosed) {
+            sendSse(res, "video", {
+              caption: DESPEDIDA_CAPTION,
+              title: despedidaAttachment.title,
+              videoKey: despedidaAttachment.videoKey,
+              url: despedidaAttachment.url,
+              posterUrl: despedidaAttachment.posterUrl,
+            });
+          }
+        }
       }
 
       if (!clientClosed) {
@@ -4726,26 +4774,33 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
 
   // Primer contacto: bienvenida + menú, siempre — sin llamar a Claude todavía.
   if (isFirstContact) {
-    // Imagen de bienvenida, ANTES del texto (mismo criterio que el resto de imágenes
-    // por WhatsApp) — "siempre", igual que el audio de bienvenida más abajo.
-    const welcomeMedia = MEDIA_CATALOG.find((m) => m.key === "bienvenida");
-    let welcomeMediaAttachment = null;
-    if (welcomeMedia) {
+    // Video de bienvenida, ANTES del texto (mismo criterio que el resto de adjuntos
+    // por WhatsApp) — "siempre", igual que el audio de bienvenida más abajo. Usa el
+    // mismo mecanismo de entrega que los videos explicativos (comprime o cae a un
+    // enlace si supera el límite de 16 MB de WhatsApp — ver resolveWhatsappVideoDelivery).
+    const welcomeVideo = VIDEO_CATALOG.find((v) => v.key === "bienvenida");
+    let welcomeVideoAttachment = null;
+    if (welcomeVideo) {
       try {
-        const welcomeMediaUrl = await resolveWhatsappMediaUrl(welcomeMedia, baseUrl);
-        if (welcomeMediaUrl) {
-          await sendWhatsappMedia(from, welcomeMediaUrl);
-          welcomeMediaAttachment = resolveMediaAttachment(welcomeMedia);
+        const delivery = await resolveWhatsappVideoDelivery(welcomeVideo, baseUrl);
+        if (delivery) {
+          if (delivery.type === "media") {
+            await sendWhatsappMedia(from, delivery.url);
+          } else {
+            await sendWhatsappMessage(from, delivery.url);
+          }
+          const videoAttachment = resolveVideoAttachment(welcomeVideo);
+          welcomeVideoAttachment = videoAttachment ? { ...videoAttachment, whatsappDelivery: delivery.type } : null;
         }
       } catch (err) {
-        console.warn("[aviso] No se pudo enviar la imagen de bienvenida por WhatsApp:", err.message);
+        console.warn("[aviso] No se pudo enviar el video de bienvenida por WhatsApp:", err.message);
       }
     }
 
     const welcome = buildWhatsappWelcomeText();
     await sendWhatsappMessage(from, welcome);
     const welcomeMsgEntry = { role: "assistant", content: welcome, time: new Date().toISOString() };
-    if (welcomeMediaAttachment) welcomeMsgEntry.media = welcomeMediaAttachment;
+    if (welcomeVideoAttachment) welcomeMsgEntry.attachment = welcomeVideoAttachment;
     record.messages.push(welcomeMsgEntry);
     // Regla "Lucy responde con audio en la bienvenida, siempre" — no bloquea el envío
     // del texto (ya se envió arriba) ni la respuesta al webhook si falla.
@@ -4973,6 +5028,32 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
             console.warn("[aviso] No se pudo enviar el video por WhatsApp:", err.message);
           }
           if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_VIDEO_KEY[matchedVideo.key]);
+        }
+
+        // Video de despedida (VIDEO_CATALOG), junto con la pregunta de valoración —
+        // mismo criterio que /api/chat: se envía como un mensaje aparte, guionado.
+        if (shouldAskRatingWhatsapp) {
+          const despedidaVideo = VIDEO_CATALOG.find((v) => v.key === "despedida");
+          try {
+            const delivery = despedidaVideo ? await resolveWhatsappVideoDelivery(despedidaVideo, baseUrl) : null;
+            if (delivery) {
+              if (delivery.type === "media") {
+                await sendWhatsappMessage(from, DESPEDIDA_CAPTION);
+                await sendWhatsappMedia(from, delivery.url);
+              } else {
+                await sendWhatsappMessage(from, `${DESPEDIDA_CAPTION}\n${delivery.url}`);
+              }
+              const despedidaAttachment = resolveVideoAttachment(despedidaVideo);
+              record.messages.push({
+                role: "assistant",
+                content: DESPEDIDA_CAPTION,
+                time: new Date().toISOString(),
+                attachment: despedidaAttachment ? { ...despedidaAttachment, whatsappDelivery: delivery.type } : undefined,
+              });
+            }
+          } catch (err) {
+            console.warn("[aviso] No se pudo enviar el video de despedida por WhatsApp:", err.message);
+          }
         }
 
         notifyAdminWatchers(phoneKey, replyMsgEntry);

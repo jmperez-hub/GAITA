@@ -44,12 +44,14 @@
     avatarUrl: SCRIPT_DIR + "lucy-avatar.png",
     greeting:
       "¡Hola! 👋 Soy Lucy, la asistente virtual de La Occidental. Puedo ayudarte con cotizaciones, información de coberturas y reportes de siniestros. ¿En qué puedo ayudarte hoy?",
-    // Imagen de bienvenida del catálogo de Lucy (ver MEDIA_CATALOG en server.js) — se
+    // Video de bienvenida del catálogo de Lucy (ver VIDEO_CATALOG en server.js) — se
     // muestra siempre junto al saludo, igual criterio que el audio de bienvenida.
-    greetingMedia: {
-      mediaKey: "bienvenida",
+    greetingVideo: {
+      kind: "video",
+      videoKey: "bienvenida",
       title: "Bienvenida a La Occidental",
-      url: "/assets/lucy-media/general/bienvenida.png",
+      url: "/assets/luci-videos/bienvenida.mp4",
+      posterUrl: "/assets/luci-videos/bienvenida.jpg",
     },
     quickReplies: [
       "Quiero cotizar un seguro",
@@ -2490,7 +2492,7 @@
     if (!hasOpenedOnce) {
       hasOpenedOnce = true;
       if (conversation.length === 0) {
-        const greetingBubble = appendMessageEl("assistant", CONFIG.greeting, undefined, undefined, CONFIG.greetingMedia);
+        const greetingBubble = appendMessageEl("assistant", CONFIG.greeting, undefined, CONFIG.greetingVideo);
         fetchGreetingAudio(greetingBubble);
       } else {
         // Restaurar historial visual desde la sesión guardada.
