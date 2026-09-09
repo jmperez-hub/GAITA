@@ -1,0 +1,133 @@
+/*
+ * corredor.css
+ * Portal de corredores (/corredor) — La Occidental C.A. de Seguros.
+ * Reutiliza los tokens de marca (chatbot.css) y la mayoría de los componentes del
+ * panel /admin (admin.css: login, header, tabs, tablas, tarjetas, botones, badges).
+ * Aquí solo lo específico de este portal: navegación por enlaces reales (en vez de
+ * pestañas de una sola página), toasts de notificaciones en tiempo real, y el
+ * layout del cotizador profesional.
+ */
+
+/* Los <a> de navegación reutilizan .lo-admin-tab (mismo aspecto que /admin) pero son
+   enlaces reales — quitamos el subrayado y el color de visitado por defecto. */
+.lo-admin-tabs a.lo-admin-tab {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.co-card-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.co-card-header-row h2 {
+  margin: 0;
+}
+
+.co-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 900px) {
+  .co-grid-2 {
+    grid-template-columns: 1fr;
+  }
+}
+
+.co-checklist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 8px 0 16px;
+}
+
+.co-doc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.co-doc-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--lo-borde);
+  border-radius: 10px;
+  background: var(--lo-fondo-chat);
+}
+
+.co-doc-item span {
+  font-size: 13px;
+  color: var(--lo-negro-texto);
+}
+
+/* Notificaciones en tiempo real (toasts) — apiladas en la esquina superior derecha,
+   por encima de todo lo demás (incluidos los modales del admin, por si se reutilizan). */
+.co-toasts {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 340px;
+  pointer-events: none;
+}
+
+.co-toast {
+  pointer-events: auto;
+  background: var(--lo-blanco);
+  border: 1px solid var(--lo-borde);
+  border-left: 4px solid var(--lo-verde);
+  border-radius: 10px;
+  box-shadow: var(--lo-sombra);
+  padding: 12px 14px;
+  font-size: 12.5px;
+  color: var(--lo-negro-texto);
+  animation: co-toast-in 0.25s var(--lo-ease-soft);
+}
+
+.co-toast-mayor,
+.co-toast-siniestro {
+  border-left-color: #e6453b;
+}
+
+.co-toast-title {
+  font-weight: 700;
+  margin-bottom: 3px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.co-toast-close {
+  float: right;
+  background: none;
+  border: none;
+  color: var(--lo-gris-claro);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 0 0 8px;
+}
+
+@keyframes co-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}

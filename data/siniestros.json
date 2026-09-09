@@ -1,0 +1,68 @@
+{
+  "siniestros": [
+    {
+      "numero": "SIN-2026-0042",
+      "poliza": "AUTO-2024-001",
+      "cedula_titular": "V-12345678",
+      "tipo": "colision",
+      "fecha_ocurrencia": "2026-08-15",
+      "fecha_reporte": "2026-08-15",
+      "estado": "en_investigacion",
+      "descripcion": "Colisión en la Av. El Milagro",
+      "ubicacion": "Av. El Milagro, Maracaibo",
+      "heridos": "No",
+      "ajustador_asignado": "Pedro Rondón",
+      "documentos_recibidos": ["fotos_dano", "denuncia_policial"],
+      "documentos_pendientes": ["presupuesto_taller"],
+      "monto_reclamado": 3500,
+      "monto_aprobado": null,
+      "siniestro_mayor": true,
+      "fecha_estimada_resolucion": "2026-09-30",
+      "comentarios": []
+    },
+    {
+      "numero": "SIN-2026-0038",
+      "poliza": "AUTO-2023-089",
+      "cedula_titular": "V-9876543",
+      "tipo": "robo",
+      "fecha_ocurrencia": "2026-07-02",
+      "fecha_reporte": "2026-07-03",
+      "estado": "aprobado",
+      "descripcion": "Robo de espejos y radio en estacionamiento del C.C. Lago Mall",
+      "ubicacion": "C.C. Lago Mall, Maracaibo",
+      "heridos": "No",
+      "ajustador_asignado": "Gabriela Uzcátegui",
+      "documentos_recibidos": ["denuncia_policial", "inventario_bienes"],
+      "documentos_pendientes": [],
+      "monto_reclamado": 850,
+      "monto_aprobado": 780,
+      "siniestro_mayor": false,
+      "fecha_estimada_resolucion": "2026-08-10",
+      "comentarios": [
+        { "fecha": "2026-07-20", "autor": "Gabriela Uzcátegui", "texto": "Ajuste aprobado, en cola de pago." }
+      ]
+    },
+    {
+      "numero": "SIN-2025-0099",
+      "poliza": "HCM-2023-045",
+      "cedula_titular": "V-12345678",
+      "tipo": "hospitalizacion",
+      "fecha_ocurrencia": "2025-11-10",
+      "fecha_reporte": "2025-11-10",
+      "estado": "pagado",
+      "descripcion": "Hospitalización de emergencia por apendicitis",
+      "ubicacion": "Clínica Zulia, Maracaibo",
+      "heridos": "N/A",
+      "ajustador_asignado": "Luis Fernández",
+      "documentos_recibidos": ["diagnostico_medico", "facturas", "orden_hospitalizacion"],
+      "documentos_pendientes": [],
+      "monto_reclamado": 4200,
+      "monto_aprobado": 4200,
+      "siniestro_mayor": true,
+      "fecha_estimada_resolucion": "2025-12-15",
+      "comentarios": [
+        { "fecha": "2025-12-01", "autor": "Luis Fernández", "texto": "Pago procesado, transferencia enviada." }
+      ]
+    }
+  ]
+}

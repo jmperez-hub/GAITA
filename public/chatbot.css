@@ -923,6 +923,39 @@
   transform: translateY(0) scale(0.97);
 }
 
+/* Botón "Compartir mi ubicación" (flujo de apertura de siniestro, ver
+   appendLocationRequestButton en chatbot.js) */
+
+.lo-location-request {
+  display: flex;
+  justify-content: center;
+  padding: 2px 14px 10px;
+}
+
+.lo-location-btn {
+  border: 1.5px solid var(--lo-verde);
+  color: var(--lo-blanco);
+  background: var(--lo-verde);
+  border-radius: 999px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: var(--lo-font);
+  cursor: pointer;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.lo-location-btn:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.lo-location-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+  transform: none;
+}
+
 /* Pie: caja de texto */
 
 .lo-chat-footer {

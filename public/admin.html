@@ -79,6 +79,10 @@
           <button type="button" class="lo-admin-tab lo-admin-tab-active" id="lo-admin-tab-conversations">
             💬 Conversaciones
           </button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-clientes">👤 Clientes</button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-siniestros">🚨 Siniestros</button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-emisiones">📝 Emisiones</button>
+          <button type="button" class="lo-admin-tab" id="lo-admin-tab-gaps">❓ Preguntas sin respuesta</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-quoter">⚙️ Cotizador</button>
           <button type="button" class="lo-admin-tab" id="lo-admin-tab-reports">📊 Reportes</button>
         </nav>
@@ -135,6 +139,15 @@
             </select>
           </label>
 
+          <label class="lo-admin-toolbar-field">
+            <span>Valoración</span>
+            <select id="lo-admin-filter-revision" class="lo-admin-input">
+              <option value="">Todas</option>
+              <option value="revision">Requieren revisión (⭐ ≤ 2)</option>
+              <option value="escalado">Escaladas (tono molesto)</option>
+            </select>
+          </label>
+
           <button type="button" id="lo-admin-clear-filters" class="lo-admin-btn-ghost">Limpiar filtros</button>
           <div class="lo-admin-toolbar-spacer"></div>
           <button type="button" id="lo-admin-refresh" class="lo-admin-btn-ghost" title="Actualizar">
@@ -157,6 +170,7 @@
                   <th>Ramos mencionados</th>
                   <th>Asesor solicitado</th>
                   <th>Cotización</th>
+                  <th>Valoración</th>
                   <th>Vista previa</th>
                 </tr>
               </thead>
@@ -166,6 +180,235 @@
           <div class="lo-admin-loading" id="lo-admin-loading">Cargando conversaciones…</div>
           <div class="lo-admin-empty" id="lo-admin-empty" hidden>
             No hay conversaciones que coincidan con la búsqueda o los filtros.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: clientes (memoria persistente) ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-clientes" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Memoria persistente de clientes</strong>
+          <p>
+            Perfiles que Lucy va construyendo cuando un cliente se identifica con su cédula o número de
+            póliza (web o WhatsApp) — nombre, pólizas, temas de interés, y preferencias, para que Lucy lo
+            reconozca en su próxima conversación sin importar el canal.
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-clientes-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar por cédula, nombre o teléfono..."
+          />
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-clientes-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Cédula</th>
+                  <th>Nombre</th>
+                  <th>Teléfono</th>
+                  <th>Pólizas</th>
+                  <th>Canal preferido</th>
+                  <th>VIP</th>
+                  <th>Última interacción</th>
+                </tr>
+              </thead>
+              <tbody id="lo-clientes-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-clientes-loading">Cargando clientes…</div>
+          <div class="lo-admin-empty" id="lo-clientes-empty" hidden>
+            Todavía no hay clientes identificados — aparecerán aquí en cuanto alguien le comparta su cédula
+            o número de póliza a Lucy.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: siniestros ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-siniestros" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Gestión de siniestros</strong>
+          <p>
+            Siniestros abiertos por Lucy en el chat (web o WhatsApp) o cargados manualmente — consulta su
+            estado, documentos, ajustador y monto aprobado. Los "siniestros mayores" (monto reclamado superior
+            a $3.000) quedan resaltados para atención prioritaria de gerencia.
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-siniestros-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar por número, cédula o titular..."
+          />
+          <label class="lo-admin-toolbar-field">
+            <span>Estado</span>
+            <select id="lo-siniestros-filter-estado" class="lo-admin-input">
+              <option value="">Todos</option>
+              <option value="recibido">Recibido</option>
+              <option value="pendiente_documentacion">Pendiente de documentación</option>
+              <option value="en_investigacion">En investigación</option>
+              <option value="aprobado">Aprobado</option>
+              <option value="rechazado">Rechazado</option>
+              <option value="por_pagar">Por pagar</option>
+              <option value="pagado">Pagado</option>
+            </select>
+          </label>
+          <label class="lo-admin-toolbar-field">
+            <span>Mayores</span>
+            <select id="lo-siniestros-filter-mayor" class="lo-admin-input">
+              <option value="">Todos</option>
+              <option value="si">Solo siniestros mayores</option>
+            </select>
+          </label>
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-siniestros-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Número</th>
+                  <th>Titular</th>
+                  <th>Tipo</th>
+                  <th>Estado</th>
+                  <th>Monto reclamado</th>
+                  <th>Ajustador</th>
+                  <th>Reportado</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="lo-siniestros-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-siniestros-loading">Cargando siniestros…</div>
+          <div class="lo-admin-empty" id="lo-siniestros-empty" hidden>
+            Todavía no hay siniestros registrados — aparecerán aquí en cuanto Lucy abra uno en el chat.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: emisiones (solicitudes del portal de corredores) ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-emisiones" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Solicitudes de emisión</strong>
+          <p>
+            Solicitudes de emisión de póliza nueva enviadas por los corredores desde el
+            <a href="/corredor/cotizar" target="_blank" rel="noopener">portal de corredores</a>. Al aprobar o
+            rechazar una, el corredor recibe una notificación en tiempo real en su portal.
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-emisiones-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar por número, cliente o corredor..."
+          />
+          <label class="lo-admin-toolbar-field">
+            <span>Estado</span>
+            <select id="lo-emisiones-filter-estado" class="lo-admin-input">
+              <option value="">Todos</option>
+              <option value="pendiente_aprobacion">Pendiente de aprobación</option>
+              <option value="aprobada">Aprobada</option>
+              <option value="rechazada">Rechazada</option>
+            </select>
+          </label>
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-emisiones-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>N.º</th>
+                  <th>Corredor</th>
+                  <th>Cliente</th>
+                  <th>Ramo</th>
+                  <th>Estado</th>
+                  <th>Enviada</th>
+                </tr>
+              </thead>
+              <tbody id="lo-emisiones-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-emisiones-loading">Cargando solicitudes…</div>
+          <div class="lo-admin-empty" id="lo-emisiones-empty" hidden>
+            Todavía no hay solicitudes de emisión — aparecerán aquí en cuanto un corredor envíe una desde su portal.
+          </div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: gaps de conocimiento ============= -->
+      <main class="lo-admin-main" id="lo-admin-view-gaps" hidden>
+        <div class="lo-admin-quoter-intro">
+          <strong>Preguntas sin respuesta</strong>
+          <p>
+            Se registran solas cuando el usuario le dice a Lucy que no respondió bien, o pide hablar con un
+            asesor humano — revísalas para mejorar el system prompt (ver <code>SYSTEM_PROMPT</code> en
+            <code>server.js</code>).
+          </p>
+        </div>
+
+        <section class="lo-admin-toolbar">
+          <input
+            type="search"
+            id="lo-gaps-search"
+            class="lo-admin-input lo-admin-search"
+            placeholder="Buscar en la pregunta o la respuesta..."
+          />
+          <label class="lo-admin-toolbar-field">
+            <span>Estado</span>
+            <select id="lo-gaps-filter-estado" class="lo-admin-input">
+              <option value="">Todas</option>
+              <option value="pendiente">Pendientes de revisar</option>
+              <option value="resuelto">Ya revisadas</option>
+            </select>
+          </label>
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="lo-gaps-refresh" class="lo-admin-btn-ghost" title="Actualizar">
+            ⟳ Actualizar
+          </button>
+        </section>
+
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Fecha</th>
+                  <th>Canal</th>
+                  <th>Pregunta del usuario</th>
+                  <th>Respuesta de Lucy</th>
+                  <th>Disparador</th>
+                  <th>Estado</th>
+                </tr>
+              </thead>
+              <tbody id="lo-gaps-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="lo-gaps-loading">Cargando…</div>
+          <div class="lo-admin-empty" id="lo-gaps-empty" hidden>
+            No hay preguntas sin respuesta registradas todavía — buena señal. 🎉
           </div>
         </section>
       </main>
@@ -467,6 +710,74 @@
         </button>
       </div>
       <div class="lo-admin-modal-body lo-chat-body" id="lo-admin-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: perfil del cliente (memoria persistente) ================= -->
+  <div id="lo-client-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-client-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Perfil del cliente">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title" id="lo-client-modal-title">Cliente</div>
+          <div class="lo-admin-modal-meta" id="lo-client-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-client-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-client-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: detalle de siniestro ================= -->
+  <div id="lo-siniestro-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-siniestro-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Detalle del siniestro">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title" id="lo-siniestro-modal-title">Siniestro</div>
+          <div class="lo-admin-modal-meta" id="lo-siniestro-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-siniestro-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-siniestro-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: detalle de solicitud de emisión ================= -->
+  <div id="lo-emision-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-emision-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Detalle de la solicitud de emisión">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title" id="lo-emision-modal-title">Solicitud de emisión</div>
+          <div class="lo-admin-modal-meta" id="lo-emision-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-emision-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-emision-modal-body"></div>
+    </div>
+  </div>
+
+  <!-- ================= Modal: detalle de gap de conocimiento ================= -->
+  <div id="lo-gap-modal" class="lo-admin-modal" hidden>
+    <div class="lo-admin-modal-backdrop" id="lo-gap-modal-backdrop"></div>
+    <div class="lo-admin-modal-panel" role="dialog" aria-modal="true" aria-label="Detalle de la pregunta sin respuesta">
+      <div class="lo-admin-modal-header">
+        <div>
+          <div class="lo-admin-modal-title">Pregunta sin respuesta</div>
+          <div class="lo-admin-modal-meta" id="lo-gap-modal-meta"></div>
+        </div>
+        <button type="button" class="lo-chat-header-btn" id="lo-gap-modal-close" aria-label="Cerrar">
+          <svg viewBox="0 0 24 24"><path d="M18.3 5.71L12 12.01l-6.3-6.3-1.4 1.4 6.3 6.3-6.3 6.29 1.4 1.4 6.3-6.29 6.3 6.29 1.4-1.4-6.3-6.29 6.3-6.3z"/></svg>
+        </button>
+      </div>
+      <div class="lo-admin-modal-body" id="lo-gap-modal-body"></div>
     </div>
   </div>
 

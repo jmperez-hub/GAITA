@@ -1,0 +1,26 @@
+{
+  "corredores": [
+    {
+      "id": "corr-001",
+      "nombre": "José Martínez",
+      "cedula": "V-8112233",
+      "email": "jose.martinez@laoccidental.com",
+      "telefono": "+584141112233",
+      "passwordHash": "$2a$10$FQ8.5PK.JbqhgFXl7V4r4.PmbCXO/mW6EWXcKUL3jPuTPBqjaJpoy",
+      "comisionPorcentaje": 12,
+      "activo": true,
+      "creadoEn": "2024-01-15T00:00:00.000Z"
+    },
+    {
+      "id": "corr-002",
+      "nombre": "Ana Torres",
+      "cedula": "V-9223344",
+      "email": "ana.torres@laoccidental.com",
+      "telefono": "+584242223344",
+      "passwordHash": "$2a$10$hiANjl3AxuFalZ6nLMldH.gDeNVpatiGTqg/2Vdeuc9/FQECRS.DO",
+      "comisionPorcentaje": 10,
+      "activo": true,
+      "creadoEn": "2024-06-01T00:00:00.000Z"
+    }
+  ]
+}

@@ -168,6 +168,45 @@
   }
 
   // -------------------------------------------------------------------------
+  // Modo supervisor: conexión SSE persistente (GET /api/chat/live) para poder recibir
+  // un mensaje del servidor SIN que el usuario haya escrito nada — "shadow messaging"
+  // desde /admin (ver server.js#notifyConversationStream). A diferencia del resto del
+  // chat (una petición corta por mensaje), esta conexión se abre UNA vez al cargar el
+  // widget y se mantiene abierta mientras la página siga abierta.
+  // -------------------------------------------------------------------------
+
+  let liveEventSource = null;
+
+  function deriveLiveUrl() {
+    if (CONFIG.liveUrl) return CONFIG.liveUrl;
+    return CONFIG.apiUrl.replace(/\/api\/chat\/?$/, "/api/chat/live");
+  }
+
+  function connectLiveStream() {
+    if (typeof window.EventSource !== "function" || !sessionId) return;
+    try {
+      if (liveEventSource) liveEventSource.close();
+      liveEventSource = new EventSource(`${deriveLiveUrl()}?sessionId=${encodeURIComponent(sessionId)}`);
+      liveEventSource.addEventListener("assistant-message", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (!data || typeof data.content !== "string" || !data.content) return;
+          appendMessageEl("assistant", data.content, data.time);
+          conversation.push({ role: "assistant", content: data.content, time: data.time || new Date().toISOString() });
+          saveHistory();
+        } catch (_e) {
+          /* evento malformado — se ignora, no debe romper el chat */
+        }
+      });
+      // EventSource reintenta la conexión solo ante un corte — no hace falta lógica
+      // adicional en onerror; el chat sigue funcionando normal (petición/respuesta)
+      // aunque este stream esté caído.
+    } catch (_e) {
+      /* el navegador no soporta EventSource, o falló al conectar */
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Construcción del DOM
   // -------------------------------------------------------------------------
 
@@ -822,6 +861,55 @@
     return el;
   }
 
+  /**
+   * Botón "📍 Compartir mi ubicación" — aparece cuando el flujo de apertura de un
+   * siniestro llega al paso de ubicación (evento SSE "location_request", ver
+   * handleSiniestroFlowGate en server.js). Usa la Geolocation API del navegador; si el
+   * usuario la deniega o no está disponible, simplemente puede escribir la dirección a
+   * mano (el paso acepta texto libre igual). Se autoelimina al usarse o al enviar
+   * cualquier otro mensaje mientras tanto (ver clearLocationRequestButton).
+   */
+  function appendLocationRequestButton() {
+    clearLocationRequestButton();
+    const body = document.getElementById("lo-chat-body");
+    const wrap = document.createElement("div");
+    wrap.className = "lo-location-request";
+    wrap.id = "lo-location-request";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "lo-location-btn";
+    btn.textContent = "📍 Compartir mi ubicación";
+    btn.addEventListener("click", () => {
+      if (!navigator.geolocation) {
+        appendSystemNote("Tu navegador no soporta compartir ubicación — puedes escribir la dirección en el chat.");
+        clearLocationRequestButton();
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "Obteniendo ubicación…";
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          clearLocationRequestButton();
+          const { latitude, longitude } = pos.coords;
+          sendMessage(`📍 Mi ubicación: https://www.google.com/maps?q=${latitude},${longitude}`);
+        },
+        () => {
+          appendSystemNote("No pude acceder a tu ubicación — puedes escribir la dirección en el chat.");
+          clearLocationRequestButton();
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    wrap.appendChild(btn);
+    body.appendChild(wrap);
+    scrollToBottom();
+  }
+
+  function clearLocationRequestButton() {
+    const existing = document.getElementById("lo-location-request");
+    if (existing) existing.remove();
+  }
+
   function scrollToBottom() {
     const body = document.getElementById("lo-chat-body");
     body.scrollTop = body.scrollHeight;
@@ -1413,6 +1501,7 @@
     const attachment = pendingAttachment;
     if (!trimmed && !attachment) return;
 
+    clearLocationRequestButton();
     const finalText = trimmed || defaultCaptionForAttachment(attachment);
 
     isSending = true;
@@ -1520,6 +1609,8 @@
             } else {
               appendMessageEl("error", msg);
             }
+          } else if (parsed.event === "location_request") {
+            appendLocationRequestButton();
           } else if (parsed.event === "audio-pending") {
             audioPendingNoteEl = appendSystemNote("🎙️ Generando respuesta en audio…");
           } else if (parsed.event === "audio") {
@@ -1586,6 +1677,10 @@
               } catch (_e) {
                 /* ignorar */
               }
+              // El stream en vivo (modo supervisor) quedó abierto con el sessionId
+              // VIEJO — sin reconectar, un mensaje que el equipo mande desde /admin para
+              // la conversación actual nunca llegaría (server.js lo enruta por sessionId).
+              connectLiveStream();
             }
           }
         }
@@ -2430,6 +2525,7 @@
     const root = buildWidget();
     conversation = loadHistory();
     sessionId = getOrCreateSessionId();
+    connectLiveStream(); // modo supervisor: recibe mensajes que el equipo mande desde /admin
     loadQuoterConfig(); // precarga en segundo plano — no bloquea el resto del widget
 
     renderQuickReplies();

@@ -40,6 +40,14 @@
     conversations: [],
     filtered: [],
     ramoLabels: RAMO_LABELS_FALLBACK,
+    clientes: [],
+    clientesFiltered: [],
+    siniestros: [],
+    siniestrosFiltered: [],
+    emisiones: [],
+    emisionesFiltered: [],
+    gaps: [],
+    gapsFiltered: [],
   };
 
   function qs(id) {
@@ -200,6 +208,7 @@
     const channel = qs("lo-admin-filter-channel").value;
     const ramo = qs("lo-admin-filter-ramo").value;
     const advisor = qs("lo-admin-filter-advisor").value;
+    const revisionFilter = qs("lo-admin-filter-revision").value;
 
     state.filtered = state.conversations.filter((c) => {
       if (search) {
@@ -213,6 +222,8 @@
       if (ramo && !(c.ramos || []).includes(ramo)) return false;
       if (advisor === "si" && !c.advisorRequested) return false;
       if (advisor === "no" && c.advisorRequested) return false;
+      if (revisionFilter === "revision" && !c.requiereRevision) return false;
+      if (revisionFilter === "escalado" && !c.escalado) return false;
       return true;
     });
 
@@ -271,6 +282,19 @@
           ? '<span class="lo-admin-attach-icon" title="Esta conversación tiene adjuntos">📎</span>'
           : "";
 
+        // Valoración de calidad + escalamiento (ver classifyIntentAndEmotion/handleRatingGate
+        // en server.js) — badge rojo si requiere revisión (⭐ ≤ 2) o quedó escalada
+        // (tono molesto detectado), badge verde con la nota si ya se valoró bien.
+        let ratingHtml = "—";
+        if (c.rating != null) {
+          ratingHtml = `<span class="lo-admin-badge ${c.rating <= 2 ? "lo-admin-badge-vencida" : "lo-admin-badge-vigente"}">⭐ ${c.rating}/5</span>`;
+        } else if (c.requiereRevision) {
+          ratingHtml = '<span class="lo-admin-badge lo-admin-badge-vencida">Revisar</span>';
+        }
+        if (c.escalado) {
+          ratingHtml += ' <span class="lo-admin-badge lo-admin-badge-mayor">🚨</span>';
+        }
+
         return `
           <tr data-id="${escapeHtml(c.id)}">
             <td>${channelHtml(c)}</td>
@@ -280,6 +304,7 @@
             <td>${ramosHtml}</td>
             <td>${advisorHtml}</td>
             <td>${quoteHtml}</td>
+            <td>${ratingHtml}</td>
             <td class="lo-admin-cell-preview" title="${escapeHtml(c.preview || "")}">${attachIcon}${escapeHtml(
           c.preview || "—"
         )}</td>
@@ -297,11 +322,16 @@
   // Detalle de conversación (modal)
   // -------------------------------------------------------------------------
 
+  let currentConversationId = null;
+  let liveEventSource = null;
+
   async function openDetail(id) {
     const modal = qs("lo-admin-modal");
     const body = qs("lo-admin-modal-body");
     const meta = qs("lo-admin-modal-meta");
 
+    stopLiveMode(); // por si quedó una conexión abierta de la conversación anterior
+    currentConversationId = id;
     modal.hidden = false;
     body.innerHTML = '<div class="lo-admin-loading">Cargando conversación…</div>';
     meta.textContent = "";
@@ -310,12 +340,40 @@
       const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error("No se pudo cargar la conversación.");
       const data = await res.json();
+      // Si mientras esta petición estaba en curso el admin ya abrió OTRA conversación
+      // (dos clics rápidos en filas distintas), esta respuesta llegó tarde — no pisar
+      // el modal que ahora corresponde a esa otra conversación.
+      if (id !== currentConversationId) return;
       renderDetail(data.conversation);
     } catch (err) {
+      if (id !== currentConversationId) return;
       body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(
         err.message || "Error al cargar la conversación."
       )}</div>`;
     }
+  }
+
+  function messageRowHtml(m) {
+    const isUser = m.role === "user";
+    const bubbleClass = isUser ? "lo-msg-user" : "lo-msg-bot";
+    const timeLabel = m.time ? formatTime(m.time) : "";
+    const avatar = isUser
+      ? ""
+      : `<div class="lo-avatar lo-avatar-sm">${AVATAR_SVG}<img src="lucy-avatar.png" alt="" onerror="this.remove()" /></div>`;
+    // `staffAuthored` (ver POST .../message) se marca SOLO para el equipo — al usuario
+    // le llegó igual que cualquier otro mensaje de Lucy ("shadow messaging").
+    const staffTag = m.staffAuthored ? ' <span class="lo-admin-staff-tag">· equipo</span>' : "";
+    return `
+      <div class="lo-msg-row ${isUser ? "lo-row-user" : "lo-row-bot"}">
+        ${avatar}
+        <div class="lo-msg-col">
+          ${attachmentHtml(m.attachment)}
+          <div class="lo-msg ${bubbleClass}">${escapeHtml(m.content)}</div>
+          ${attachmentHtml(m.media)}
+          <span class="lo-msg-time">${escapeHtml(timeLabel)}${staffTag}</span>
+        </div>
+      </div>
+    `;
   }
 
   function renderDetail(conversation) {
@@ -335,36 +393,190 @@
 
     meta.textContent = `${idLabel} · Inicio ${formatDateTime(conversation.startedAt)} · ${ramosLabel}`;
 
-    const messages = conversation.messages || [];
-    if (messages.length === 0) {
-      body.innerHTML = '<div class="lo-admin-empty">Esta conversación no tiene mensajes.</div>';
-      return;
+    // Si esta conversación ya está vinculada a un cliente identificado (memoria
+    // persistente), un enlace rápido para saltar a su perfil completo.
+    if (conversation.clienteId) {
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "lo-admin-client-link";
+      link.textContent = `👤 Ver perfil del cliente (${conversation.clienteId})`;
+      link.addEventListener("click", () => {
+        closeModal();
+        openClientDetail(conversation.clienteId);
+      });
+      meta.appendChild(document.createElement("br"));
+      meta.appendChild(link);
     }
 
-    const messagesHtml = messages
-      .map((m) => {
-        const isUser = m.role === "user";
-        const bubbleClass = isUser ? "lo-msg-user" : "lo-msg-bot";
-        const timeLabel = m.time ? formatTime(m.time) : "";
-        const avatar = isUser
-          ? ""
-          : `<div class="lo-avatar lo-avatar-sm">${AVATAR_SVG}<img src="lucy-avatar.png" alt="" onerror="this.remove()" /></div>`;
-        return `
-          <div class="lo-msg-row ${isUser ? "lo-row-user" : "lo-row-bot"}">
-            ${avatar}
-            <div class="lo-msg-col">
-              ${attachmentHtml(m.attachment)}
-              <div class="lo-msg ${bubbleClass}">${escapeHtml(m.content)}</div>
-              ${attachmentHtml(m.media)}
-              <span class="lo-msg-time">${escapeHtml(timeLabel)}</span>
-            </div>
-          </div>
-        `;
-      })
-      .join("");
+    const messages = conversation.messages || [];
+    const messagesHtml = messages.length
+      ? messages.map(messageRowHtml).join("")
+      : '<div class="lo-admin-empty">Esta conversación no tiene mensajes.</div>';
 
-    body.innerHTML = messagesHtml + renderQuotesSection(conversation.quotes);
+    body.innerHTML =
+      supervisorBarHtml(summary) + `<div id="lo-admin-live-messages">${messagesHtml}</div>` + renderQuotesSection(conversation.quotes) + shadowComposerHtml();
     body.scrollTop = 0;
+
+    wireSupervisorControls(conversation.id, summary);
+  }
+
+  // -------------------------------------------------------------------------
+  // Modo supervisor: ver en vivo, tomar control, "shadow messaging", notas internas.
+  // -------------------------------------------------------------------------
+
+  function supervisorBarHtml(summary) {
+    const escaladoBadge = summary && summary.escalado ? '<span class="lo-admin-badge lo-admin-badge-mayor">🚨 Escalado</span>' : "";
+    const ratingBadge =
+      summary && summary.rating != null
+        ? `<span class="lo-admin-badge ${summary.rating <= 2 ? "lo-admin-badge-vencida" : "lo-admin-badge-vigente"}">⭐ ${summary.rating}/5</span>`
+        : "";
+    const revisionBadge =
+      summary && summary.requiereRevision ? '<span class="lo-admin-badge lo-admin-badge-vencida">Requiere revisión</span>' : "";
+    const controlActivo = Boolean(summary && summary.controladoPorHumano);
+
+    return `
+      <div class="lo-admin-supervisor-bar">
+        <button type="button" class="lo-admin-btn-ghost" id="lo-admin-live-toggle">🔴 Ver en vivo</button>
+        <button type="button" class="lo-admin-btn-ghost ${controlActivo ? "lo-admin-control-active" : ""}" id="lo-admin-control-toggle">
+          ${controlActivo ? "🔓 Soltar control" : "🧑‍💼 Tomar control"}
+        </button>
+        ${escaladoBadge} ${ratingBadge} ${revisionBadge}
+      </div>
+      <div class="lo-admin-supervisor-notes">
+        <label for="lo-admin-conv-notas">Notas internas (solo el equipo, no las ve el cliente)</label>
+        <textarea id="lo-admin-conv-notas" rows="2" maxlength="2000">${escapeHtml((summary && summary.notasInternas) || "")}</textarea>
+        <button type="button" class="lo-admin-btn-ghost" id="lo-admin-notas-save">💾 Guardar notas</button>
+        <span class="lo-quoter-save-status" id="lo-admin-notas-status" hidden></span>
+      </div>
+    `;
+  }
+
+  function shadowComposerHtml() {
+    return `
+      <div class="lo-admin-shadow-composer">
+        <input type="text" id="lo-admin-shadow-input" placeholder="Escribe un mensaje — se envía como si lo hubiera escrito Lucy..." maxlength="4000" />
+        <button type="button" class="lo-admin-btn-primary" id="lo-admin-shadow-send">Enviar</button>
+      </div>
+      <span class="lo-quoter-save-status" id="lo-admin-shadow-status" hidden></span>
+    `;
+  }
+
+  function wireSupervisorControls(conversationId, summary) {
+    qs("lo-admin-live-toggle").addEventListener("click", () => toggleLiveMode(conversationId));
+    qs("lo-admin-control-toggle").addEventListener("click", () => toggleControl(conversationId, summary));
+    qs("lo-admin-notas-save").addEventListener("click", () => saveConversationNotes(conversationId));
+    qs("lo-admin-shadow-send").addEventListener("click", () => sendShadowMessage(conversationId));
+    qs("lo-admin-shadow-input").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") sendShadowMessage(conversationId);
+    });
+  }
+
+  function toggleLiveMode(conversationId) {
+    const btn = qs("lo-admin-live-toggle");
+    if (liveEventSource) {
+      stopLiveMode();
+      if (btn) btn.textContent = "🔴 Ver en vivo";
+      return;
+    }
+    liveEventSource = new EventSource(`/api/admin/conversations/${encodeURIComponent(conversationId)}/live`);
+    liveEventSource.addEventListener("message", (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        const container = qs("lo-admin-live-messages");
+        if (!container) return;
+        container.insertAdjacentHTML("beforeend", messageRowHtml(msg));
+        const body = qs("lo-admin-modal-body");
+        if (body) body.scrollTop = body.scrollHeight;
+      } catch (_e) {
+        /* evento malformado — se ignora */
+      }
+    });
+    if (btn) btn.textContent = "⏹️ Detener vista en vivo";
+  }
+
+  function stopLiveMode() {
+    if (liveEventSource) {
+      liveEventSource.close();
+      liveEventSource = null;
+    }
+  }
+
+  async function toggleControl(conversationId, summary) {
+    const btn = qs("lo-admin-control-toggle");
+    const tomarControl = !(summary && summary.controladoPorHumano);
+    btn.disabled = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/control`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tomarControl }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo actualizar el control de la conversación.");
+      if (summary) summary.controladoPorHumano = data.controladoPorHumano;
+      btn.textContent = data.controladoPorHumano ? "🔓 Soltar control" : "🧑‍💼 Tomar control";
+      btn.classList.toggle("lo-admin-control-active", data.controladoPorHumano);
+    } catch (err) {
+      alert(err.message || "Error al actualizar el control de la conversación.");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  async function saveConversationNotes(conversationId) {
+    const statusEl = qs("lo-admin-notas-status");
+    const notas = qs("lo-admin-conv-notas").value;
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/notes`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notas }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudieron guardar las notas.");
+      statusEl.textContent = "✓ Notas guardadas.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar las notas.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  async function sendShadowMessage(conversationId) {
+    const input = qs("lo-admin-shadow-input");
+    const statusEl = qs("lo-admin-shadow-status");
+    const text = input.value.trim();
+    if (!text) return;
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(conversationId)}/message`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo enviar el mensaje.");
+      input.value = "";
+      // Si "Ver en vivo" está activo, el propio stream SSE (ver toggleLiveMode) ya va a
+      // recibir este mismo mensaje como evento "message" y lo va a agregar — agregarlo
+      // también aquí lo duplicaría en la transcripción. Solo se agrega a mano cuando NO
+      // hay una conexión en vivo escuchando.
+      if (!liveEventSource) {
+        const container = qs("lo-admin-live-messages");
+        if (container) {
+          container.insertAdjacentHTML("beforeend", messageRowHtml(data.message));
+          const body = qs("lo-admin-modal-body");
+          if (body) body.scrollTop = body.scrollHeight;
+        }
+      }
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al enviar el mensaje.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
   }
 
   /** Sección "Cotizaciones generadas" al final del detalle de la conversación. */
@@ -440,6 +652,8 @@
 
   function closeModal() {
     qs("lo-admin-modal").hidden = true;
+    stopLiveMode();
+    currentConversationId = null;
   }
 
   // -------------------------------------------------------------------------
@@ -551,9 +765,13 @@
   // Pestañas: Conversaciones ↔ Cotizador ↔ Reportes
   // -------------------------------------------------------------------------
 
-  const VIEWS = ["conversations", "quoter", "reports"];
+  const VIEWS = ["conversations", "clientes", "siniestros", "emisiones", "gaps", "quoter", "reports"];
   let quoterViewLoaded = false;
   let reportsViewLoaded = false;
+  let clientesViewLoaded = false;
+  let siniestrosViewLoaded = false;
+  let emisionesViewLoaded = false;
+  let gapsViewLoaded = false;
 
   function showView(name) {
     VIEWS.forEach((v) => {
@@ -569,6 +787,976 @@
       reportsViewLoaded = true;
       loadAndRenderReports();
     }
+    if (name === "clientes" && !clientesViewLoaded) {
+      clientesViewLoaded = true;
+      loadClientes();
+    }
+    if (name === "siniestros" && !siniestrosViewLoaded) {
+      siniestrosViewLoaded = true;
+      loadSiniestros();
+    }
+    if (name === "emisiones" && !emisionesViewLoaded) {
+      emisionesViewLoaded = true;
+      loadEmisiones();
+    }
+    if (name === "gaps" && !gapsViewLoaded) {
+      gapsViewLoaded = true;
+      loadGaps();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Clientes (memoria persistente) — lista, búsqueda, y perfil editable
+  // -------------------------------------------------------------------------
+
+  const CANAL_LABELS = { web: "💬 Web", whatsapp: "WhatsApp" };
+
+  async function loadClientes() {
+    qs("lo-clientes-loading").hidden = false;
+    qs("lo-clientes-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/clientes");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de clientes.");
+      const data = await res.json();
+      state.clientes = data.clientes || [];
+      applyClientesFilter();
+    } catch (err) {
+      qs("lo-clientes-table-body").innerHTML = "";
+      qs("lo-clientes-empty").hidden = false;
+      qs("lo-clientes-empty").textContent = err.message || "Error al cargar los clientes.";
+    } finally {
+      qs("lo-clientes-loading").hidden = true;
+    }
+  }
+
+  function applyClientesFilter() {
+    const term = normalizeSearch(qs("lo-clientes-search").value);
+    state.clientesFiltered = !term
+      ? state.clientes
+      : state.clientes.filter((c) =>
+          [c.cedula, c.nombre, c.telefono, c.email].some((f) => normalizeSearch(f).includes(term))
+        );
+    renderClientesTable();
+  }
+
+  function normalizeSearch(text) {
+    return String(text || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "");
+  }
+
+  function renderClientesTable() {
+    const tbody = qs("lo-clientes-table-body");
+    const emptyEl = qs("lo-clientes-empty");
+
+    if (state.clientesFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.clientes.length === 0
+          ? "Todavía no hay clientes identificados — aparecerán aquí en cuanto alguien le comparta su cédula o número de póliza a Lucy."
+          : "No hay clientes que coincidan con la búsqueda.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.clientesFiltered
+      .map((c) => {
+        const vipHtml = c.vip ? '<span class="lo-admin-badge lo-admin-badge-formal">⭐ VIP</span>' : "—";
+        const polizasHtml = (c.polizas || []).length ? escapeHtml(c.polizas.join(", ")) : "—";
+        const canalHtml = escapeHtml(CANAL_LABELS[c.canalPreferido] || c.canalPreferido || "—");
+        return `
+          <tr data-cedula="${escapeAttr(c.cedula)}">
+            <td>${escapeHtml(c.cedula)}</td>
+            <td>${escapeHtml(c.nombre || "—")}</td>
+            <td>${escapeHtml(c.telefono || "—")}</td>
+            <td>${polizasHtml}</td>
+            <td>${canalHtml}</td>
+            <td>${vipHtml}</td>
+            <td>${escapeHtml(formatDateTime(c.ultimaInteraccion))}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openClientDetail(row.getAttribute("data-cedula")));
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // Detalle de cliente (modal): perfil editable + historial de conversaciones
+  // -------------------------------------------------------------------------
+
+  let currentClienteCedula = null;
+
+  async function openClientDetail(cedula) {
+    const modal = qs("lo-client-modal");
+    const body = qs("lo-client-modal-body");
+    const meta = qs("lo-client-modal-meta");
+
+    currentClienteCedula = cedula;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando cliente…</div>';
+    meta.textContent = "";
+
+    try {
+      const res = await apiFetch(`/api/admin/clientes/${encodeURIComponent(cedula)}`);
+      if (!res.ok) throw new Error("No se pudo cargar el cliente.");
+      const data = await res.json();
+      renderClientDetail(data.cliente, data.conversaciones || [], data.polizas || []);
+    } catch (err) {
+      body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(err.message || "Error al cargar el cliente.")}</div>`;
+    }
+  }
+
+  const POLIZA_RAMO_LABELS = {
+    automoviles: "Automóviles",
+    autos: "Automóviles",
+    hcm: "HCM",
+    personas: "Personas",
+    patrimonial: "Patrimonial",
+    patrimoniales: "Patrimoniales",
+    fianza: "Fianza",
+    fianzas: "Fianzas",
+  };
+
+  /** Insignia de vigencia de una póliza — usa `poliza.vigencia`, ya calculada por
+   *  polizasService.verificarVigencia() en el servidor (ver GET /api/admin/clientes/:cedula). */
+  function polizaVigenciaBadge(vig) {
+    if (!vig) return "—";
+    if (vig.vencida) {
+      return `<span class="lo-admin-badge lo-admin-badge-vencida">Vencida hace ${Math.abs(vig.diasRestantes)} d</span>`;
+    }
+    if (vig.porVencer) {
+      return `<span class="lo-admin-badge lo-admin-badge-por-vencer">Vence en ${vig.diasRestantes} d</span>`;
+    }
+    return `<span class="lo-admin-badge lo-admin-badge-vigente">Vigente</span>`;
+  }
+
+  /** Sección de solo lectura con las pólizas REALES del cliente (services/polizas.service.js)
+   *  — distinta del campo `polizas` (texto libre) del perfil, que es autoreportado. */
+  function polizasSectionHtml(polizas) {
+    if (!polizas.length) {
+      return `
+        <h3 class="lo-admin-client-history-title">📋 Pólizas registradas (0)</h3>
+        <p class="lo-admin-hint" style="margin:0 20px 16px">
+          No se encontró ninguna póliza de este cliente en el sistema de pólizas.
+        </p>
+      `;
+    }
+    const rowsHtml = polizas
+      .map(
+        (p) => `
+          <tr>
+            <td>${escapeHtml(p.numero)}</td>
+            <td>${escapeHtml(POLIZA_RAMO_LABELS[p.ramo] || p.ramo)}</td>
+            <td>${polizaVigenciaBadge(p.vigencia)}</td>
+            <td>${escapeHtml(String(p.prima_anual))} ${escapeHtml(p.moneda || "")}</td>
+            <td>${escapeHtml(String(p.suma_asegurada))} ${escapeHtml(p.moneda || "")}</td>
+            <td>${escapeHtml(p.corredor || "—")}</td>
+            <td>${p.siniestros_activos > 0 ? `<span class="lo-admin-badge lo-admin-badge-advisor-yes">${p.siniestros_activos}</span>` : "—"}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    return `
+      <h3 class="lo-admin-client-history-title">📋 Pólizas registradas (${polizas.length})</h3>
+      <div class="lo-admin-table-scroll">
+        <table class="lo-admin-table">
+          <thead>
+            <tr>
+              <th>Número</th>
+              <th>Ramo</th>
+              <th>Vigencia</th>
+              <th>Prima anual</th>
+              <th>Suma asegurada</th>
+              <th>Corredor</th>
+              <th>Siniestros activos</th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function renderClientDetail(cliente, conversaciones, polizas) {
+    qs("lo-client-modal-title").textContent = cliente.nombre || cliente.cedula;
+    qs("lo-client-modal-meta").textContent = `${cliente.cedula} · Cliente desde ${formatDateTime(cliente.clienteDesde)}`;
+
+    const temasHtml = (cliente.historialTemas || []).length
+      ? cliente.historialTemas.map((t) => `<span class="lo-admin-badge lo-admin-badge-ramo">${escapeHtml(t)}</span>`).join("")
+      : '<span class="lo-admin-hint">Sin temas registrados todavía.</span>';
+
+    const conversacionesHtml = conversaciones.length
+      ? conversaciones
+          .map(
+            (c) => `
+              <tr data-id="${escapeAttr(c.id)}">
+                <td>${channelHtml(c)}</td>
+                <td>${escapeHtml(formatDateTime(c.startedAt))}</td>
+                <td>${c.messageCount}</td>
+                <td class="lo-admin-cell-preview" title="${escapeAttr(c.preview || "")}">${escapeHtml(c.preview || "—")}</td>
+              </tr>
+            `
+          )
+          .join("")
+      : `<tr><td colspan="4" class="lo-admin-empty">Sin conversaciones vinculadas todavía.</td></tr>`;
+
+    qs("lo-client-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Nombre completo</span>
+            <input type="text" id="lo-client-field-nombre" value="${escapeAttr(cliente.nombre || "")}" maxlength="200" />
+          </label>
+          <label class="lo-quote-field">
+            <span>Teléfono</span>
+            <input type="text" id="lo-client-field-telefono" value="${escapeAttr(cliente.telefono || "")}" maxlength="30" />
+          </label>
+        </div>
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Correo electrónico</span>
+            <input type="email" id="lo-client-field-email" value="${escapeAttr(cliente.email || "")}" maxlength="200" />
+          </label>
+          <label class="lo-quote-field">
+            <span>Próxima renovación</span>
+            <input
+              type="text"
+              id="lo-client-field-renovacion"
+              value="${escapeAttr(cliente.proximaRenovacion || "")}"
+              placeholder="ej. 2026-10-15"
+              maxlength="40"
+            />
+          </label>
+        </div>
+
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-vip" ${cliente.vip ? "checked" : ""} />
+            <span>⭐ Cliente VIP (Lucy le da atención prioritaria en el tono)</span>
+          </label>
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-audio" ${cliente.preferenciaAudio ? "checked" : ""} />
+            <span>🔊 Prefiere respuestas en audio</span>
+          </label>
+          <label class="lo-quote-checkbox">
+            <input type="checkbox" id="lo-client-field-siniestro" ${cliente.casoAbiertoSiniestro ? "checked" : ""} />
+            <span>🚨 Caso de siniestro abierto</span>
+          </label>
+        </div>
+
+        <label class="lo-quote-field">
+          <span>Pólizas registradas (separadas por coma)</span>
+          <input type="text" id="lo-client-field-polizas" value="${escapeAttr((cliente.polizas || []).join(", "))}" />
+        </label>
+
+        <div class="lo-admin-client-field-row">
+          <span class="lo-admin-hint">Canal preferido: ${escapeHtml(CANAL_LABELS[cliente.canalPreferido] || cliente.canalPreferido || "—")} · Idioma: ${escapeHtml(cliente.idiomaPreferido || "—")}</span>
+        </div>
+
+        <div class="lo-admin-hint">Temas de interés (automático, no editable): ${temasHtml}</div>
+
+        <label class="lo-quote-field">
+          <span>Notas internas del equipo (nunca se le muestran al cliente)</span>
+          <textarea id="lo-client-field-notas" rows="3" maxlength="2000">${escapeHtml(cliente.notasInternas || "")}</textarea>
+        </label>
+
+        <div class="lo-admin-card-save">
+          <p class="lo-quoter-save-status" id="lo-client-save-status" hidden></p>
+          <button type="button" class="lo-admin-btn-primary" id="lo-client-save-btn">💾 Guardar cambios</button>
+        </div>
+      </div>
+
+      ${polizasSectionHtml(polizas || [])}
+
+      <h3 class="lo-admin-client-history-title">💬 Conversaciones vinculadas (${conversaciones.length})</h3>
+      <div class="lo-admin-table-scroll">
+        <table class="lo-admin-table">
+          <thead>
+            <tr>
+              <th>Canal</th>
+              <th>Fecha de inicio</th>
+              <th>Mensajes</th>
+              <th>Vista previa</th>
+            </tr>
+          </thead>
+          <tbody>${conversacionesHtml}</tbody>
+        </table>
+      </div>
+    `;
+
+    qs("lo-client-save-btn").addEventListener("click", () => saveClientProfile(cliente.cedula));
+    document.querySelectorAll("#lo-client-modal-body tbody tr[data-id]").forEach((row) => {
+      row.addEventListener("click", () => {
+        closeClientModal();
+        openDetail(row.getAttribute("data-id"));
+      });
+    });
+  }
+
+  async function saveClientProfile(cedula) {
+    const btn = qs("lo-client-save-btn");
+    const statusEl = qs("lo-client-save-status");
+    btn.disabled = true;
+    statusEl.hidden = true;
+
+    const polizas = qs("lo-client-field-polizas")
+      .value.split(",")
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    const patch = {
+      nombre: qs("lo-client-field-nombre").value.trim(),
+      telefono: qs("lo-client-field-telefono").value.trim(),
+      email: qs("lo-client-field-email").value.trim(),
+      proximaRenovacion: qs("lo-client-field-renovacion").value.trim(),
+      vip: qs("lo-client-field-vip").checked,
+      preferenciaAudio: qs("lo-client-field-audio").checked,
+      casoAbiertoSiniestro: qs("lo-client-field-siniestro").checked,
+      notasInternas: qs("lo-client-field-notas").value,
+      polizas,
+    };
+
+    try {
+      const res = await apiFetch(`/api/admin/clientes/${encodeURIComponent(cedula)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar el perfil.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      loadClientes(); // refresca la tabla en segundo plano (VIP, nombre, etc. pueden haber cambiado)
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeClientModal() {
+    qs("lo-client-modal").hidden = true;
+    currentClienteCedula = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Siniestros (services/siniestros.service.js) — lista, filtros, y detalle editable
+  // -------------------------------------------------------------------------
+
+  const SINIESTRO_ESTADO_LABELS = {
+    recibido: "Recibido",
+    pendiente_documentacion: "Pendiente de documentación",
+    en_investigacion: "En investigación",
+    aprobado: "Aprobado",
+    rechazado: "Rechazado",
+    por_pagar: "Por pagar",
+    pagado: "Pagado",
+  };
+
+  const SINIESTRO_TIPO_LABELS = {
+    accidente: "Accidente de tránsito",
+    colision: "Accidente de tránsito",
+    robo: "Robo",
+    incendio: "Incendio",
+    hospitalizacion: "Hospitalización (HCM)",
+  };
+
+  const SINIESTRO_DOC_LABELS = {
+    fotos_dano: "Fotos del daño",
+    denuncia_policial: "Denuncia policial",
+    croquis: "Croquis del accidente",
+    presupuesto_taller: "Presupuesto del taller",
+    inventario_bienes: "Inventario de bienes",
+    informe_bomberos: "Informe de bomberos",
+    presupuesto_reparacion: "Presupuesto de reparación",
+    diagnostico_medico: "Diagnóstico médico",
+    facturas: "Facturas",
+    orden_hospitalizacion: "Orden de hospitalización",
+  };
+
+  function siniestroBadgeHtml(s) {
+    const cls = `lo-admin-badge lo-admin-badge-siniestro-${s.estado}`;
+    const label = SINIESTRO_ESTADO_LABELS[s.estado] || s.estado;
+    return `<span class="${cls}">${escapeHtml(label)}</span>`;
+  }
+
+  async function loadSiniestros() {
+    qs("lo-siniestros-loading").hidden = false;
+    qs("lo-siniestros-empty").hidden = true;
+    try {
+      const params = new URLSearchParams();
+      const estado = qs("lo-siniestros-filter-estado").value;
+      const mayor = qs("lo-siniestros-filter-mayor").value;
+      if (estado) params.set("estado", estado);
+      if (mayor === "si") params.set("mayor", "1");
+      const qsStr = params.toString();
+      const res = await apiFetch(`/api/admin/siniestros${qsStr ? `?${qsStr}` : ""}`);
+      if (!res.ok) throw new Error("No se pudo cargar la lista de siniestros.");
+      const data = await res.json();
+      state.siniestros = data.siniestros || [];
+      applySiniestrosFilter();
+    } catch (err) {
+      qs("lo-siniestros-table-body").innerHTML = "";
+      qs("lo-siniestros-empty").hidden = false;
+      qs("lo-siniestros-empty").textContent = err.message || "Error al cargar los siniestros.";
+    } finally {
+      qs("lo-siniestros-loading").hidden = true;
+    }
+  }
+
+  function applySiniestrosFilter() {
+    const term = normalizeSearch(qs("lo-siniestros-search").value);
+    state.siniestrosFiltered = !term
+      ? state.siniestros
+      : state.siniestros.filter((s) =>
+          [s.numero, s.cedula_titular, s.clienteNombre].some((f) => normalizeSearch(f).includes(term))
+        );
+    renderSiniestrosTable();
+  }
+
+  function renderSiniestrosTable() {
+    const tbody = qs("lo-siniestros-table-body");
+    const emptyEl = qs("lo-siniestros-empty");
+
+    if (state.siniestrosFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.siniestros.length === 0
+          ? "Todavía no hay siniestros registrados — aparecerán aquí en cuanto Lucy abra uno en el chat."
+          : "No hay siniestros que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.siniestrosFiltered
+      .map((s) => {
+        const mayorHtml = s.siniestro_mayor ? '<span class="lo-admin-badge lo-admin-badge-mayor">🚨 Mayor</span>' : "";
+        return `
+          <tr data-numero="${escapeAttr(s.numero)}">
+            <td>${escapeHtml(s.numero)}</td>
+            <td>${escapeHtml(s.clienteNombre || s.cedula_titular || "—")}</td>
+            <td>${escapeHtml(SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo)}</td>
+            <td>${siniestroBadgeHtml(s)}</td>
+            <td>$${escapeHtml(String(s.monto_reclamado))}</td>
+            <td>${escapeHtml(s.ajustador_asignado || "—")}</td>
+            <td>${escapeHtml(formatDateTime(s.fecha_reporte))}</td>
+            <td>${mayorHtml}</td>
+          </tr>
+        `;
+      })
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openSiniestroDetail(row.getAttribute("data-numero")));
+    });
+  }
+
+  let currentSiniestroNumero = null;
+
+  async function openSiniestroDetail(numero) {
+    const modal = qs("lo-siniestro-modal");
+    const body = qs("lo-siniestro-modal-body");
+    const meta = qs("lo-siniestro-modal-meta");
+
+    currentSiniestroNumero = numero;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando siniestro…</div>';
+    meta.textContent = "";
+
+    try {
+      const res = await apiFetch(`/api/admin/siniestros/${encodeURIComponent(numero)}`);
+      if (!res.ok) throw new Error("No se pudo cargar el siniestro.");
+      const data = await res.json();
+      renderSiniestroDetail(data.siniestro);
+    } catch (err) {
+      body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(err.message || "Error al cargar el siniestro.")}</div>`;
+    }
+  }
+
+  function renderSiniestroDetail(s) {
+    qs("lo-siniestro-modal-title").textContent = s.numero;
+    qs("lo-siniestro-modal-meta").textContent =
+      `${s.clienteNombre || s.cedula_titular || "—"} · Póliza ${s.poliza || "—"} · Reportado ${formatDateTime(s.fecha_reporte)}` +
+      (s.siniestro_mayor ? " · 🚨 Siniestro mayor" : "");
+
+    const estadoOptionsHtml = Object.entries(SINIESTRO_ESTADO_LABELS)
+      .map(([value, label]) => `<option value="${value}" ${s.estado === value ? "selected" : ""}>${escapeHtml(label)}</option>`)
+      .join("");
+
+    // El checklist de documentos se arma con la UNIÓN de recibidos + pendientes (es la
+    // lista completa que le pidió Lucy según el tipo, ver DOCUMENTOS_POR_TIPO en
+    // services/siniestros.service.js) — marcar/desmarcar mueve el documento entre
+    // ambas listas al guardar.
+    const recibidosSet = new Set(s.documentos_recibidos || []);
+    const todosLosDocs = [...new Set([...(s.documentos_recibidos || []), ...(s.documentos_pendientes || [])])];
+    const documentosHtml = todosLosDocs.length
+      ? todosLosDocs
+          .map(
+            (d) => `
+              <label class="lo-quote-checkbox">
+                <input type="checkbox" class="lo-siniestro-doc-check" value="${escapeAttr(d)}" ${recibidosSet.has(d) ? "checked" : ""} />
+                <span>${escapeHtml(SINIESTRO_DOC_LABELS[d] || d)}</span>
+              </label>
+            `
+          )
+          .join("")
+      : '<p class="lo-admin-hint">Este tipo de siniestro no requiere documentos.</p>';
+
+    const comentariosHtml = (s.comentarios || []).length
+      ? s.comentarios
+          .map(
+            (c) => `
+              <div class="lo-admin-hint" style="margin-bottom:6px">
+                <strong>${escapeHtml(formatDateTime(c.fecha))} — ${escapeHtml(c.autor || "—")}:</strong> ${escapeHtml(c.texto)}
+              </div>
+            `
+          )
+          .join("")
+      : '<p class="lo-admin-hint">Sin comentarios todavía.</p>';
+
+    qs("lo-siniestro-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint">
+          <strong>Tipo:</strong> ${escapeHtml(SINIESTRO_TIPO_LABELS[s.tipo] || s.tipo)} ·
+          <strong>Ocurrió:</strong> ${escapeHtml(s.fecha_ocurrencia || "—")} ·
+          <strong>Ubicación:</strong> ${escapeHtml(s.ubicacion || "—")}
+        </div>
+        <div class="lo-admin-hint" style="margin-top:6px">
+          <strong>Descripción:</strong> ${escapeHtml(s.descripcion || "—")}
+        </div>
+
+        <div class="lo-admin-client-field-row" style="margin-top:14px">
+          <label class="lo-quote-field">
+            <span>Estado</span>
+            <select id="lo-siniestro-field-estado">${estadoOptionsHtml}</select>
+          </label>
+          <label class="lo-quote-field">
+            <span>Ajustador asignado</span>
+            <input type="text" id="lo-siniestro-field-ajustador" value="${escapeAttr(s.ajustador_asignado || "")}" maxlength="100" />
+          </label>
+        </div>
+        <div class="lo-admin-client-field-row">
+          <label class="lo-quote-field">
+            <span>Monto reclamado</span>
+            <input type="text" value="$${escapeAttr(String(s.monto_reclamado))}" disabled />
+          </label>
+          <label class="lo-quote-field">
+            <span>Monto aprobado</span>
+            <input type="number" id="lo-siniestro-field-monto-aprobado" value="${s.monto_aprobado != null ? escapeAttr(String(s.monto_aprobado)) : ""}" min="0" step="0.01" placeholder="Sin definir" />
+          </label>
+        </div>
+        <label class="lo-quote-field">
+          <span>Fecha estimada de resolución</span>
+          <input type="text" id="lo-siniestro-field-fecha" value="${escapeAttr(s.fecha_estimada_resolucion || "")}" placeholder="AAAA-MM-DD" maxlength="20" />
+        </label>
+
+        <div class="lo-admin-hint" style="margin-top:10px"><strong>📎 Documentos</strong></div>
+        <div id="lo-siniestro-docs">${documentosHtml}</div>
+
+        <div class="lo-admin-hint" style="margin-top:10px"><strong>💬 Comentarios</strong></div>
+        <div id="lo-siniestro-comentarios">${comentariosHtml}</div>
+        <label class="lo-quote-field">
+          <span>Agregar comentario</span>
+          <textarea id="lo-siniestro-field-comentario" rows="2" maxlength="500"></textarea>
+        </label>
+
+        <div class="lo-admin-card-save">
+          <p class="lo-quoter-save-status" id="lo-siniestro-save-status" hidden></p>
+          <button type="button" class="lo-admin-btn-primary" id="lo-siniestro-save-btn">💾 Guardar cambios</button>
+        </div>
+      </div>
+    `;
+
+    qs("lo-siniestro-save-btn").addEventListener("click", () => saveSiniestro(s.numero));
+  }
+
+  async function saveSiniestro(numero) {
+    const btn = qs("lo-siniestro-save-btn");
+    const statusEl = qs("lo-siniestro-save-status");
+    btn.disabled = true;
+    statusEl.hidden = true;
+
+    const documentosRecibidos = Array.from(document.querySelectorAll(".lo-siniestro-doc-check"))
+      .filter((el) => el.checked)
+      .map((el) => el.value);
+    const documentosPendientes = Array.from(document.querySelectorAll(".lo-siniestro-doc-check"))
+      .filter((el) => !el.checked)
+      .map((el) => el.value);
+
+    const montoAprobadoRaw = qs("lo-siniestro-field-monto-aprobado").value;
+    const patch = {
+      estado: qs("lo-siniestro-field-estado").value,
+      ajustador_asignado: qs("lo-siniestro-field-ajustador").value.trim(),
+      monto_aprobado: montoAprobadoRaw === "" ? null : Number(montoAprobadoRaw),
+      fecha_estimada_resolucion: qs("lo-siniestro-field-fecha").value.trim(),
+      documentos_recibidos: documentosRecibidos,
+      documentos_pendientes: documentosPendientes,
+    };
+    const nuevoComentario = qs("lo-siniestro-field-comentario").value.trim();
+    if (nuevoComentario) patch.nuevoComentario = nuevoComentario;
+
+    try {
+      const res = await apiFetch(`/api/admin/siniestros/${encodeURIComponent(numero)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar el siniestro.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      renderSiniestroDetail(data.siniestro);
+      loadSiniestros(); // refresca la tabla en segundo plano (estado, ajustador, etc.)
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function closeSiniestroModal() {
+    qs("lo-siniestro-modal").hidden = true;
+    currentSiniestroNumero = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Emisiones (solicitudes del portal de corredores) — lista, filtros, y
+  // aprobar/rechazar con notificación en tiempo real al corredor.
+  // -------------------------------------------------------------------------
+
+  const EMISION_ESTADO_LABELS = {
+    pendiente_aprobacion: "Pendiente de aprobación",
+    aprobada: "Aprobada",
+    rechazada: "Rechazada",
+  };
+
+  // Vocabulario propio del formulario de emisión del portal de corredores (ver
+  // co-emision-ramo en corredor.html) — distinto de RAMO_LABELS_FALLBACK (que es el
+  // vocabulario de detección de ramo en las conversaciones del chat).
+  const EMISION_RAMO_LABELS = {
+    automoviles: "Automóviles",
+    autos: "Automóviles",
+    hcm: "HCM",
+    personas: "Personas",
+    patrimonial: "Patrimonial",
+    patrimoniales: "Patrimoniales",
+    fianza: "Fianza",
+    fianzas: "Fianzas",
+  };
+
+  function emisionBadgeHtml(estado) {
+    const cls = estado === "aprobada" ? "lo-admin-badge-vigente" : estado === "rechazada" ? "lo-admin-badge-vencida" : "lo-admin-badge-por-vencer";
+    return `<span class="lo-admin-badge ${cls}">${escapeHtml(EMISION_ESTADO_LABELS[estado] || estado)}</span>`;
+  }
+
+  async function loadEmisiones() {
+    qs("lo-emisiones-loading").hidden = false;
+    qs("lo-emisiones-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/emisiones");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de solicitudes.");
+      const data = await res.json();
+      state.emisiones = data.emisiones || [];
+      applyEmisionesFilter();
+    } catch (err) {
+      qs("lo-emisiones-table-body").innerHTML = "";
+      qs("lo-emisiones-empty").hidden = false;
+      qs("lo-emisiones-empty").textContent = err.message || "Error al cargar las solicitudes.";
+    } finally {
+      qs("lo-emisiones-loading").hidden = true;
+    }
+  }
+
+  function applyEmisionesFilter() {
+    const term = normalizeSearch(qs("lo-emisiones-search").value);
+    const estado = qs("lo-emisiones-filter-estado").value;
+    state.emisionesFiltered = state.emisiones.filter((e) => {
+      const matchesTerm = !term || [e.id, e.cliente.nombre, e.cliente.cedula, e.corredorNombre].some((f) => normalizeSearch(f).includes(term));
+      const matchesEstado = !estado || e.estado === estado;
+      return matchesTerm && matchesEstado;
+    });
+    renderEmisionesTable();
+  }
+
+  function renderEmisionesTable() {
+    const tbody = qs("lo-emisiones-table-body");
+    const emptyEl = qs("lo-emisiones-empty");
+
+    if (state.emisionesFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.emisiones.length === 0
+          ? "Todavía no hay solicitudes de emisión — aparecerán aquí en cuanto un corredor envíe una desde su portal."
+          : "No hay solicitudes que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.emisionesFiltered
+      .map(
+        (e) => `
+          <tr data-id="${escapeAttr(e.id)}">
+            <td>${escapeHtml(e.id)}</td>
+            <td>${escapeHtml(e.corredorNombre)}</td>
+            <td>${escapeHtml(e.cliente.nombre)} (${escapeHtml(e.cliente.cedula)})</td>
+            <td>${escapeHtml(EMISION_RAMO_LABELS[e.ramo] || e.ramo)}</td>
+            <td>${emisionBadgeHtml(e.estado)}</td>
+            <td>${escapeHtml(formatDateTime(e.creadoEn))}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openEmisionDetail(row.getAttribute("data-id")));
+    });
+  }
+
+  let currentEmisionId = null;
+
+  async function openEmisionDetail(id) {
+    const modal = qs("lo-emision-modal");
+    const body = qs("lo-emision-modal-body");
+    currentEmisionId = id;
+    modal.hidden = false;
+    body.innerHTML = '<div class="lo-admin-loading">Cargando solicitud…</div>';
+
+    const emision = state.emisiones.find((e) => e.id === id);
+    if (!emision) {
+      body.innerHTML = '<div class="lo-admin-empty">Solicitud no encontrada.</div>';
+      return;
+    }
+    renderEmisionDetail(emision);
+  }
+
+  function renderEmisionDetail(e) {
+    qs("lo-emision-modal-title").textContent = e.id;
+    qs("lo-emision-modal-meta").textContent = `Corredor: ${e.corredorNombre} · Enviada ${formatDateTime(e.creadoEn)}`;
+
+    const detalleHtml = e.detalle && e.detalle.notas ? `<p class="lo-admin-hint">${escapeHtml(e.detalle.notas)}</p>` : "";
+    const puedeResolver = e.estado === "pendiente_aprobacion";
+
+    qs("lo-emision-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint">
+          <strong>Cliente:</strong> ${escapeHtml(e.cliente.nombre)} (${escapeHtml(e.cliente.cedula)})
+          ${e.cliente.telefono ? ` · ${escapeHtml(e.cliente.telefono)}` : ""}
+        </div>
+        <div class="lo-admin-hint" style="margin-top:4px">
+          <strong>Ramo:</strong> ${escapeHtml(EMISION_RAMO_LABELS[e.ramo] || e.ramo)} ·
+          <strong>Estado:</strong> ${emisionBadgeHtml(e.estado)}
+        </div>
+        ${detalleHtml}
+        ${e.notasAdmin ? `<p class="lo-admin-hint"><strong>Notas internas:</strong> ${escapeHtml(e.notasAdmin)}</p>` : ""}
+
+        <label class="lo-quote-field">
+          <span>Notas internas (opcional)</span>
+          <textarea id="lo-emision-field-notas" rows="2" maxlength="1000">${escapeHtml(e.notasAdmin || "")}</textarea>
+        </label>
+
+        <p class="lo-quoter-save-status" id="lo-emision-save-status" hidden></p>
+        <div class="lo-admin-card-save">
+          ${
+            puedeResolver
+              ? `
+                <button type="button" class="lo-admin-btn-ghost" id="lo-emision-rechazar-btn">❌ Rechazar</button>
+                <button type="button" class="lo-admin-btn-primary" id="lo-emision-aprobar-btn">✅ Aprobar</button>
+              `
+              : `<span class="lo-admin-hint">Esta solicitud ya fue resuelta (${emisionBadgeHtml(e.estado)}) — puedes actualizar las notas internas igual.</span>
+                 <button type="button" class="lo-admin-btn-primary" id="lo-emision-notas-btn">💾 Guardar notas</button>`
+          }
+        </div>
+      </div>
+    `;
+
+    if (puedeResolver) {
+      qs("lo-emision-aprobar-btn").addEventListener("click", () => resolverEmision(e.id, "aprobada"));
+      qs("lo-emision-rechazar-btn").addEventListener("click", () => resolverEmision(e.id, "rechazada"));
+    } else {
+      qs("lo-emision-notas-btn").addEventListener("click", () => resolverEmision(e.id, e.estado));
+    }
+  }
+
+  async function resolverEmision(id, estado) {
+    const statusEl = qs("lo-emision-save-status");
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/emisiones/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ estado, notasAdmin: qs("lo-emision-field-notas").value }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo actualizar la solicitud.");
+
+      statusEl.textContent = "✓ Cambios guardados correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      const idx = state.emisiones.findIndex((em) => em.id === id);
+      if (idx !== -1) state.emisiones[idx] = data.emision;
+      renderEmisionDetail(data.emision);
+      applyEmisionesFilter();
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  function closeEmisionModal() {
+    qs("lo-emision-modal").hidden = true;
+    currentEmisionId = null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Gaps de conocimiento ("❓ Preguntas sin respuesta") — se registran solos (ver
+  // registrarGapConocimiento en server.js); aquí solo se listan y se marcan revisados.
+  // -------------------------------------------------------------------------
+
+  async function loadGaps() {
+    qs("lo-gaps-loading").hidden = false;
+    qs("lo-gaps-empty").hidden = true;
+    try {
+      const res = await apiFetch("/api/admin/gaps");
+      if (!res.ok) throw new Error("No se pudo cargar la lista de preguntas sin respuesta.");
+      const data = await res.json();
+      state.gaps = data.gaps || [];
+      applyGapsFilter();
+    } catch (err) {
+      qs("lo-gaps-table-body").innerHTML = "";
+      qs("lo-gaps-empty").hidden = false;
+      qs("lo-gaps-empty").textContent = err.message || "Error al cargar las preguntas sin respuesta.";
+    } finally {
+      qs("lo-gaps-loading").hidden = true;
+    }
+  }
+
+  function applyGapsFilter() {
+    const term = normalizeSearch(qs("lo-gaps-search").value);
+    const estado = qs("lo-gaps-filter-estado").value;
+    state.gapsFiltered = state.gaps.filter((g) => {
+      const matchesTerm = !term || [g.pregunta, g.respuestaLucy].some((f) => normalizeSearch(f).includes(term));
+      const matchesEstado = !estado || (estado === "resuelto" ? g.resuelto : !g.resuelto);
+      return matchesTerm && matchesEstado;
+    });
+    renderGapsTable();
+  }
+
+  function renderGapsTable() {
+    const tbody = qs("lo-gaps-table-body");
+    const emptyEl = qs("lo-gaps-empty");
+
+    if (state.gapsFiltered.length === 0) {
+      tbody.innerHTML = "";
+      emptyEl.hidden = false;
+      emptyEl.textContent =
+        state.gaps.length === 0
+          ? "No hay preguntas sin respuesta registradas todavía — buena señal. 🎉"
+          : "No hay resultados que coincidan con la búsqueda o los filtros.";
+      return;
+    }
+    emptyEl.hidden = true;
+
+    tbody.innerHTML = state.gapsFiltered
+      .map(
+        (g) => `
+          <tr data-id="${escapeAttr(g.id)}">
+            <td>${escapeHtml(formatDateTime(g.fecha))}</td>
+            <td>${g.canal === "whatsapp" ? "WhatsApp" : "💬 Web"}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.pregunta)}">${escapeHtml(g.pregunta || "—")}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.respuestaLucy)}">${escapeHtml(g.respuestaLucy || "—")}</td>
+            <td class="lo-admin-cell-preview" title="${escapeAttr(g.disparador)}">${escapeHtml(g.disparador || "—")}</td>
+            <td>${g.resuelto ? '<span class="lo-admin-badge lo-admin-badge-vigente">Revisada</span>' : '<span class="lo-admin-badge lo-admin-badge-por-vencer">Pendiente</span>'}</td>
+          </tr>
+        `
+      )
+      .join("");
+
+    Array.from(tbody.querySelectorAll("tr")).forEach((row) => {
+      row.addEventListener("click", () => openGapDetail(row.getAttribute("data-id")));
+    });
+  }
+
+  let currentGapId = null;
+
+  function openGapDetail(id) {
+    const gap = state.gaps.find((g) => g.id === id);
+    if (!gap) return;
+    currentGapId = id;
+    qs("lo-gap-modal").hidden = false;
+    qs("lo-gap-modal-meta").textContent = `${formatDateTime(gap.fecha)} · ${gap.canal === "whatsapp" ? "WhatsApp" : "Chat web"}`;
+    qs("lo-gap-modal-body").innerHTML = `
+      <div class="lo-admin-client-profile">
+        <div class="lo-admin-hint"><strong>Pregunta del usuario:</strong></div>
+        <p>${escapeHtml(gap.pregunta || "—")}</p>
+        <div class="lo-admin-hint"><strong>Respuesta de Lucy:</strong></div>
+        <p>${escapeHtml(gap.respuestaLucy || "—")}</p>
+        <div class="lo-admin-hint"><strong>Lo que disparó el registro:</strong> ${escapeHtml(gap.disparador || "—")}</div>
+
+        <label class="lo-quote-field">
+          <span>Notas del equipo</span>
+          <textarea id="lo-gap-field-notas" rows="3" maxlength="1000">${escapeHtml(gap.notas || "")}</textarea>
+        </label>
+        <label class="lo-quote-checkbox">
+          <input type="checkbox" id="lo-gap-field-resuelto" ${gap.resuelto ? "checked" : ""} />
+          <span>Ya revisado por el equipo</span>
+        </label>
+
+        <p class="lo-quoter-save-status" id="lo-gap-save-status" hidden></p>
+        <div class="lo-admin-card-save">
+          <button type="button" class="lo-admin-btn-primary" id="lo-gap-save-btn">💾 Guardar</button>
+        </div>
+      </div>
+    `;
+    qs("lo-gap-save-btn").addEventListener("click", () => saveGap(id));
+  }
+
+  async function saveGap(id) {
+    const statusEl = qs("lo-gap-save-status");
+    statusEl.hidden = true;
+    try {
+      const res = await apiFetch(`/api/admin/gaps/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resuelto: qs("lo-gap-field-resuelto").checked,
+          notas: qs("lo-gap-field-notas").value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "No se pudo guardar.");
+      const idx = state.gaps.findIndex((g) => g.id === id);
+      if (idx !== -1) state.gaps[idx] = data.gap;
+      statusEl.textContent = "✓ Guardado correctamente.";
+      statusEl.className = "lo-quoter-save-status lo-status-ok";
+      statusEl.hidden = false;
+      applyGapsFilter();
+    } catch (err) {
+      statusEl.textContent = err.message || "Error al guardar.";
+      statusEl.className = "lo-quoter-save-status lo-status-error";
+      statusEl.hidden = false;
+    }
+  }
+
+  function closeGapModal() {
+    qs("lo-gap-modal").hidden = true;
+    currentGapId = null;
   }
 
   // -------------------------------------------------------------------------
@@ -1192,6 +2380,7 @@
     qs("lo-admin-filter-channel").addEventListener("change", applyFilters);
     qs("lo-admin-filter-ramo").addEventListener("change", applyFilters);
     qs("lo-admin-filter-advisor").addEventListener("change", applyFilters);
+    qs("lo-admin-filter-revision").addEventListener("change", applyFilters);
 
     qs("lo-admin-clear-filters").addEventListener("click", () => {
       qs("lo-admin-search").value = "";
@@ -1200,6 +2389,7 @@
       qs("lo-admin-filter-channel").value = "";
       qs("lo-admin-filter-ramo").value = "";
       qs("lo-admin-filter-advisor").value = "";
+      qs("lo-admin-filter-revision").value = "";
       applyFilters();
     });
 
@@ -1210,14 +2400,63 @@
 
     qs("lo-admin-modal-close").addEventListener("click", closeModal);
     qs("lo-admin-modal-backdrop").addEventListener("click", closeModal);
+    qs("lo-client-modal-close").addEventListener("click", closeClientModal);
+    qs("lo-client-modal-backdrop").addEventListener("click", closeClientModal);
+    qs("lo-siniestro-modal-close").addEventListener("click", closeSiniestroModal);
+    qs("lo-siniestro-modal-backdrop").addEventListener("click", closeSiniestroModal);
+    qs("lo-emision-modal-close").addEventListener("click", closeEmisionModal);
+    qs("lo-emision-modal-backdrop").addEventListener("click", closeEmisionModal);
+    qs("lo-gap-modal-close").addEventListener("click", closeGapModal);
+    qs("lo-gap-modal-backdrop").addEventListener("click", closeGapModal);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !qs("lo-admin-modal").hidden) closeModal();
+      if (event.key !== "Escape") return;
+      if (!qs("lo-gap-modal").hidden) {
+        closeGapModal();
+        return;
+      }
+      if (!qs("lo-emision-modal").hidden) {
+        closeEmisionModal();
+        return;
+      }
+      if (!qs("lo-siniestro-modal").hidden) {
+        closeSiniestroModal();
+        return;
+      }
+      if (!qs("lo-client-modal").hidden) {
+        closeClientModal();
+        return;
+      }
+      if (!qs("lo-admin-modal").hidden) closeModal();
     });
 
     // Pestañas
     qs("lo-admin-tab-conversations").addEventListener("click", () => showView("conversations"));
+    qs("lo-admin-tab-clientes").addEventListener("click", () => showView("clientes"));
+    qs("lo-admin-tab-siniestros").addEventListener("click", () => showView("siniestros"));
+    qs("lo-admin-tab-emisiones").addEventListener("click", () => showView("emisiones"));
+    qs("lo-admin-tab-gaps").addEventListener("click", () => showView("gaps"));
     qs("lo-admin-tab-quoter").addEventListener("click", () => showView("quoter"));
     qs("lo-admin-tab-reports").addEventListener("click", () => showView("reports"));
+
+    // Clientes (memoria persistente)
+    qs("lo-clientes-search").addEventListener("input", debounce(applyClientesFilter, 200));
+    qs("lo-clientes-refresh").addEventListener("click", loadClientes);
+
+    // Siniestros
+    qs("lo-siniestros-search").addEventListener("input", debounce(applySiniestrosFilter, 200));
+    qs("lo-siniestros-filter-estado").addEventListener("change", loadSiniestros);
+    qs("lo-siniestros-filter-mayor").addEventListener("change", loadSiniestros);
+    qs("lo-siniestros-refresh").addEventListener("click", loadSiniestros);
+
+    // Emisiones (solicitudes del portal de corredores)
+    qs("lo-emisiones-search").addEventListener("input", debounce(applyEmisionesFilter, 200));
+    qs("lo-emisiones-filter-estado").addEventListener("change", applyEmisionesFilter);
+    qs("lo-emisiones-refresh").addEventListener("click", loadEmisiones);
+
+    // Gaps de conocimiento (preguntas sin respuesta)
+    qs("lo-gaps-search").addEventListener("input", debounce(applyGapsFilter, 200));
+    qs("lo-gaps-filter-estado").addEventListener("change", applyGapsFilter);
+    qs("lo-gaps-refresh").addEventListener("click", loadGaps);
 
     // Editor del cotizador: tablas editables (agregar/eliminar filas)
     wireSimpleTable("lo-quoter-rcv-tarifas-body", "lo-quoter-rcv-tarifa-add", rcvTarifaRowHtml);

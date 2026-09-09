@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>Portal de corredores — La Occidental</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet"
+  />
+  <!-- Reutiliza los tokens de marca (chatbot.css) y clases de tabla/tarjeta/botón del
+       panel /admin (admin.css) — el portal de corredores es una segunda aplicación
+       cliente, pero con la misma identidad visual y los mismos componentes base.
+       Rutas ABSOLUTAS (empiezan con "/") — a diferencia de /admin (una sola ruta
+       plana), este HTML se sirve desde 4 rutas a distinta profundidad (/corredor,
+       /corredor/clientes, /corredor/cotizar, /corredor/siniestros); una ruta relativa
+       como "chatbot.css" se resolvería contra /corredor/chatbot.css en esas 3 últimas
+       y rompería la carga (404) — ver también el <img> del avatar y corredor.js más abajo. -->
+  <link rel="stylesheet" href="/chatbot.css" />
+  <link rel="stylesheet" href="/admin.css" />
+  <link rel="stylesheet" href="/corredor.css" />
+</head>
+<body>
+  <div id="co-root">
+    <!-- ================= Pantalla de inicio de sesión ================= -->
+    <div id="co-login" class="lo-admin-login-screen">
+      <div class="lo-admin-login-card">
+        <div class="lo-avatar lo-avatar-lg lo-admin-login-avatar">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="4" r="1.3"></circle>
+            <rect x="11.3" y="5" width="1.4" height="2.6"></rect>
+            <rect x="4.5" y="7.5" width="15" height="11" rx="5.5"></rect>
+            <circle cx="9.4" cy="13" r="1.6" fill="#ffffff"></circle>
+            <circle cx="14.6" cy="13" r="1.6" fill="#ffffff"></circle>
+            <rect x="10" y="16.3" width="4" height="1.3" rx="0.65" fill="#ffffff"></rect>
+          </svg>
+          <img src="/lucy-avatar.png" alt="" onerror="this.remove()" />
+        </div>
+        <h1 class="lo-admin-login-title">Portal de corredores</h1>
+        <p class="lo-admin-login-sub">La Occidental · Herramientas para tu cartera</p>
+
+        <form id="co-login-form" class="lo-admin-login-form" autocomplete="on">
+          <label class="lo-admin-field">
+            <span>Correo</span>
+            <input type="email" id="co-login-email" autocomplete="username" placeholder="tu.nombre@laoccidental.com" required />
+          </label>
+          <label class="lo-admin-field">
+            <span>Contraseña</span>
+            <input type="password" id="co-login-password" autocomplete="current-password" placeholder="Ingresa tu contraseña" required />
+          </label>
+          <p class="lo-admin-login-error" id="co-login-error" hidden></p>
+          <button type="submit" class="lo-admin-btn-primary" id="co-login-submit">Ingresar</button>
+        </form>
+      </div>
+    </div>
+
+    <!-- ================= Portal (dashboard) ================= -->
+    <div id="co-app" class="lo-admin-dashboard" hidden>
+      <header class="lo-admin-header">
+        <div class="lo-admin-header-brand">
+          <div class="lo-avatar lo-avatar-md">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="4" r="1.3"></circle>
+              <rect x="11.3" y="5" width="1.4" height="2.6"></rect>
+              <rect x="4.5" y="7.5" width="15" height="11" rx="5.5"></rect>
+              <circle cx="9.4" cy="13" r="1.6" fill="#ffffff"></circle>
+              <circle cx="14.6" cy="13" r="1.6" fill="#ffffff"></circle>
+              <rect x="10" y="16.3" width="4" height="1.3" rx="0.65" fill="#ffffff"></rect>
+            </svg>
+            <img src="/lucy-avatar.png" alt="" onerror="this.remove()" />
+          </div>
+          <div>
+            <div class="lo-admin-header-title">Portal de corredores</div>
+            <div class="lo-admin-header-sub" id="co-header-sub">La Occidental</div>
+          </div>
+        </div>
+        <nav class="lo-admin-tabs">
+          <a href="/corredor" class="lo-admin-tab" data-route="/corredor">📊 Dashboard</a>
+          <a href="/corredor/clientes" class="lo-admin-tab" data-route="/corredor/clientes">👤 Clientes</a>
+          <a href="/corredor/cotizar" class="lo-admin-tab" data-route="/corredor/cotizar">🧮 Cotizar</a>
+          <a href="/corredor/siniestros" class="lo-admin-tab" data-route="/corredor/siniestros">🚨 Siniestros</a>
+        </nav>
+        <button type="button" id="co-logout" class="lo-admin-btn-ghost">Cerrar sesión</button>
+      </header>
+
+      <!-- ============= Vista: Dashboard ============= -->
+      <main class="lo-admin-main" id="co-view-dashboard" hidden>
+        <section class="lo-admin-stats" id="co-stats" aria-live="polite"></section>
+
+        <section class="lo-admin-card">
+          <div class="co-card-header-row">
+            <h2>⏰ Pólizas por vencer este mes</h2>
+            <button type="button" class="lo-admin-btn-primary" id="co-btn-recordatorios">📲 Enviar recordatorios por WhatsApp</button>
+          </div>
+          <p class="lo-quoter-save-status" id="co-recordatorios-status" hidden></p>
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Póliza</th>
+                  <th>Titular</th>
+                  <th>Ramo</th>
+                  <th>Vigencia</th>
+                  <th>Prima anual</th>
+                </tr>
+              </thead>
+              <tbody id="co-dashboard-vencer-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-empty" id="co-dashboard-vencer-empty" hidden>No tienes pólizas por vencer este mes. 🎉</div>
+        </section>
+
+        <div class="co-grid-2">
+          <section class="lo-admin-card">
+            <h2>📝 Mis solicitudes de emisión</h2>
+            <div class="lo-admin-table-scroll">
+              <table class="lo-admin-table">
+                <thead>
+                  <tr>
+                    <th>N.º</th>
+                    <th>Cliente</th>
+                    <th>Ramo</th>
+                    <th>Estado</th>
+                  </tr>
+                </thead>
+                <tbody id="co-dashboard-emisiones-body"></tbody>
+              </table>
+            </div>
+            <div class="lo-admin-empty" id="co-dashboard-emisiones-empty" hidden>Aún no has enviado ninguna solicitud de emisión.</div>
+          </section>
+
+          <section class="lo-admin-card">
+            <h2>📄 Documentos</h2>
+            <p class="lo-admin-hint">Condicionados generales, tarifario y formulario de siniestros, listos para descargar.</p>
+            <div id="co-documentos-list" class="co-doc-list"></div>
+          </section>
+        </div>
+      </main>
+
+      <!-- ============= Vista: Clientes (cartera) ============= -->
+      <main class="lo-admin-main" id="co-view-clientes" hidden>
+        <section class="lo-admin-toolbar">
+          <input type="search" id="co-clientes-search" class="lo-admin-input lo-admin-search" placeholder="Buscar por cédula o nombre..." />
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="co-clientes-refresh" class="lo-admin-btn-ghost" title="Actualizar">⟳ Actualizar</button>
+        </section>
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Cédula</th>
+                  <th>Titular</th>
+                  <th>Pólizas</th>
+                  <th>Vigencia</th>
+                </tr>
+              </thead>
+              <tbody id="co-clientes-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="co-clientes-loading">Cargando cartera…</div>
+          <div class="lo-admin-empty" id="co-clientes-empty" hidden>Todavía no tienes clientes en tu cartera.</div>
+        </section>
+      </main>
+
+      <!-- ============= Vista: Cotizador profesional ============= -->
+      <main class="lo-admin-main" id="co-view-cotizar" hidden>
+        <div class="co-grid-2">
+          <section class="lo-admin-card">
+            <h2>🧮 Cotizador profesional</h2>
+            <p class="lo-admin-hint">Genera una cotización formal en PDF con membrete de La Occidental.</p>
+
+            <label class="lo-quote-field">
+              <span>Ramo</span>
+              <select id="co-cotizar-ramo">
+                <option value="automoviles">🚗 Automóviles (RCV)</option>
+                <option value="hcm">🏥 HCM</option>
+              </select>
+            </label>
+
+            <div class="lo-admin-client-field-row">
+              <label class="lo-quote-field">
+                <span>Nombre del cliente</span>
+                <input type="text" id="co-cotizar-cliente-nombre" maxlength="200" required />
+              </label>
+              <label class="lo-quote-field">
+                <span>Cédula</span>
+                <input type="text" id="co-cotizar-cliente-cedula" placeholder="V-12345678" maxlength="20" required />
+              </label>
+            </div>
+
+            <div id="co-cotizar-form-rcv">
+              <label class="lo-quote-field">
+                <span>Tipo de vehículo</span>
+                <select id="co-rcv-tipo"></select>
+              </label>
+              <label class="lo-quote-field">
+                <span>Vehículo (marca / modelo / año)</span>
+                <input type="text" id="co-cotizar-cliente-vehiculo" placeholder="Toyota Corolla 2020" maxlength="200" />
+              </label>
+              <div class="lo-admin-client-field-row">
+                <label class="lo-quote-field">
+                  <span>Origen de placa</span>
+                  <select id="co-rcv-placa">
+                    <option value="nacional">Nacional</option>
+                    <option value="extranjera">Extranjera</option>
+                  </select>
+                </label>
+                <label class="lo-quote-field">
+                  <span>Uso</span>
+                  <select id="co-rcv-uso">
+                    <option value="particular">Particular</option>
+                    <option value="sinLucro">Sin fines de lucro</option>
+                  </select>
+                </label>
+              </div>
+              <div id="co-rcv-recargos" class="co-checklist"></div>
+            </div>
+
+            <div id="co-cotizar-form-hcm" hidden>
+              <label class="lo-quote-field">
+                <span>Edad del titular</span>
+                <input type="number" id="co-hcm-edad" min="0" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Suma asegurada</span>
+                <select id="co-hcm-suma"></select>
+              </label>
+              <label class="lo-quote-field">
+                <span>Edades de beneficiarios adicionales (separadas por coma)</span>
+                <input type="text" id="co-hcm-beneficiarios" placeholder="ej. 8, 35" />
+              </label>
+            </div>
+
+            <p class="lo-quoter-save-status" id="co-cotizar-status" hidden></p>
+            <button type="button" class="lo-admin-btn-primary" id="co-cotizar-submit">📄 Generar cotización en PDF</button>
+          </section>
+
+          <section class="lo-admin-card">
+            <h2>📝 Solicitar emisión de póliza</h2>
+            <p class="lo-admin-hint">Queda en estado "pendiente de aprobación" hasta que gerencia la revise.</p>
+
+            <div class="lo-admin-client-field-row">
+              <label class="lo-quote-field">
+                <span>Nombre del cliente</span>
+                <input type="text" id="co-emision-nombre" maxlength="200" />
+              </label>
+              <label class="lo-quote-field">
+                <span>Cédula</span>
+                <input type="text" id="co-emision-cedula" placeholder="V-12345678" maxlength="20" />
+              </label>
+            </div>
+            <label class="lo-quote-field">
+              <span>Teléfono (opcional)</span>
+              <input type="text" id="co-emision-telefono" maxlength="30" />
+            </label>
+            <label class="lo-quote-field">
+              <span>Ramo</span>
+              <select id="co-emision-ramo">
+                <option value="automoviles">Automóviles</option>
+                <option value="hcm">HCM</option>
+                <option value="patrimoniales">Patrimoniales</option>
+                <option value="fianzas">Fianzas</option>
+                <option value="personas">Personas</option>
+              </select>
+            </label>
+            <label class="lo-quote-field">
+              <span>Notas / detalle de la solicitud</span>
+              <textarea id="co-emision-detalle" rows="3" maxlength="1000"></textarea>
+            </label>
+
+            <p class="lo-quoter-save-status" id="co-emision-status" hidden></p>
+            <button type="button" class="lo-admin-btn-primary" id="co-emision-submit">Enviar solicitud</button>
+          </section>
+        </div>
+      </main>
+
+      <!-- ============= Vista: Siniestros de la cartera ============= -->
+      <main class="lo-admin-main" id="co-view-siniestros" hidden>
+        <section class="lo-admin-toolbar">
+          <input type="search" id="co-siniestros-search" class="lo-admin-input lo-admin-search" placeholder="Buscar por número, cédula o titular..." />
+          <div class="lo-admin-toolbar-spacer"></div>
+          <button type="button" id="co-siniestros-refresh" class="lo-admin-btn-ghost" title="Actualizar">⟳ Actualizar</button>
+        </section>
+        <section class="lo-admin-table-wrap">
+          <div class="lo-admin-table-scroll">
+            <table class="lo-admin-table">
+              <thead>
+                <tr>
+                  <th>Número</th>
+                  <th>Titular</th>
+                  <th>Tipo</th>
+                  <th>Estado</th>
+                  <th>Ajustador</th>
+                </tr>
+              </thead>
+              <tbody id="co-siniestros-table-body"></tbody>
+            </table>
+          </div>
+          <div class="lo-admin-loading" id="co-siniestros-loading">Cargando siniestros…</div>
+          <div class="lo-admin-empty" id="co-siniestros-empty" hidden>Ningún cliente de tu cartera tiene siniestros registrados.</div>
+        </section>
+      </main>
+    </div>
+
+    <!-- ================= Notificaciones en tiempo real (toasts) ================= -->
+    <div id="co-toasts" class="co-toasts" aria-live="polite"></div>
+  </div>
+
+  <script src="/corredor.js"></script>
+</body>
+</html>

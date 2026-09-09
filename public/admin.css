@@ -516,6 +516,77 @@ select {
   margin: 0 4px 4px 0;
 }
 
+/* Insignias de vigencia de póliza (services/polizas.service.js) */
+
+.lo-admin-badge-vigente {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-por-vencer {
+  background: #fff9db;
+  color: #7a6400;
+  border: 1px solid var(--lo-amarillo);
+}
+
+.lo-admin-badge-vencida {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+}
+
+/* Insignias de estado de siniestro (services/siniestros.service.js) */
+
+.lo-admin-badge-siniestro-recibido {
+  background: var(--lo-fondo-chat);
+  color: var(--lo-gris-oscuro);
+  border: 1px solid var(--lo-borde);
+}
+
+.lo-admin-badge-siniestro-pendiente_documentacion {
+  background: #fff9db;
+  color: #7a6400;
+  border: 1px solid var(--lo-amarillo);
+}
+
+.lo-admin-badge-siniestro-en_investigacion {
+  background: #eef3fb;
+  color: #3a5a80;
+  border: 1px solid #cddcf0;
+}
+
+.lo-admin-badge-siniestro-aprobado {
+  background: #eafcf1;
+  color: var(--lo-verde);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-siniestro-rechazado {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #f3c9c9;
+}
+
+.lo-admin-badge-siniestro-por_pagar {
+  background: #ffe8d1;
+  color: #92400e;
+  border: 1px solid #f5c395;
+}
+
+.lo-admin-badge-siniestro-pagado {
+  background: var(--lo-verde);
+  color: var(--lo-blanco);
+  border: 1px solid var(--lo-verde);
+}
+
+.lo-admin-badge-mayor {
+  background: #fdeaea;
+  color: #9a2f2f;
+  border: 1px solid #e6453b;
+  font-weight: 700;
+}
+
 /* Insignias de canal (Web / WhatsApp) */
 
 .lo-admin-badge-web {
@@ -539,6 +610,71 @@ select {
   height: 12px;
   fill: var(--lo-blanco);
   flex-shrink: 0;
+}
+
+/* Modo supervisor (ver en vivo, tomar control, shadow messaging, notas internas) —
+   dentro del modal de detalle de conversación. */
+
+.lo-admin-supervisor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px dashed var(--lo-borde);
+}
+
+.lo-admin-control-active {
+  background: #fdeaea;
+  border-color: #e6453b;
+  color: #9a2f2f;
+}
+
+.lo-admin-supervisor-notes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 16px 12px;
+  border-bottom: 1px dashed var(--lo-borde);
+}
+
+.lo-admin-supervisor-notes label {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  color: var(--lo-gris-oscuro);
+}
+
+.lo-admin-supervisor-notes textarea {
+  flex: 1 1 260px;
+  min-width: 200px;
+  font-family: var(--lo-font);
+  font-size: 12.5px;
+  border: 1px solid var(--lo-borde);
+  border-radius: 8px;
+  padding: 6px 8px;
+  resize: vertical;
+}
+
+.lo-admin-staff-tag {
+  color: var(--lo-verde);
+  font-weight: 600;
+}
+
+.lo-admin-shadow-composer {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px dashed var(--lo-borde);
+}
+
+.lo-admin-shadow-composer input {
+  flex: 1;
+  font-family: var(--lo-font);
+  font-size: 13px;
+  border: 1px solid var(--lo-borde);
+  border-radius: 999px;
+  padding: 8px 14px;
 }
 
 /* Sección de cotizaciones dentro del modal de detalle */
@@ -889,6 +1025,55 @@ select {
 .lo-admin-audio-transcript-none {
   font-style: italic;
   opacity: 0.75;
+}
+
+/* Perfil de cliente (memoria persistente) — modal en la pestaña "Clientes" */
+
+.lo-admin-client-profile {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+
+.lo-admin-client-field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+}
+
+.lo-admin-client-field-row .lo-quote-field {
+  flex: 1;
+  min-width: 180px;
+}
+
+.lo-admin-client-history-title {
+  margin: 4px 20px 10px;
+  font-size: 14px;
+}
+
+.lo-admin-client-profile ~ .lo-admin-table-scroll,
+#lo-client-modal-body .lo-admin-table-scroll {
+  margin: 0 20px 16px;
+}
+
+/* Enlace desde el detalle de una conversación hacia el perfil del cliente vinculado */
+.lo-admin-client-link {
+  display: inline-block;
+  margin-top: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lo-verde);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.lo-admin-client-link:hover {
+  color: var(--lo-verde-claro);
 }
 
 @media (max-width: 900px) {
