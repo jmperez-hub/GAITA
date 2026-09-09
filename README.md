@@ -1,4 +1,4 @@
-# Chatbot Web — La Occidental C.A. de Seguros
+# Chatbot Web — C.A. de Seguros La Occidental
 
 Widget de chat flotante para atención al cliente, impulsado por la API de Anthropic
 (Claude). Incluye un backend en Node.js/Express que mantiene la clave de API en el
@@ -149,7 +149,7 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `ALLOWED_ORIGINS`           | Orígenes permitidos por CORS, separados por coma                              | `http://localhost:3000`    |
 | `RATE_LIMIT_WINDOW_MS`      | Ventana de tiempo (ms) para el límite de peticiones                           | `60000`                    |
 | `RATE_LIMIT_MAX_REQUESTS`   | Máximo de mensajes por IP dentro de la ventana                                | `20`                       |
-| `COMPANY_NAME`              | Nombre de la compañía usado en el prompt del sistema                          | `La Occidental C.A. de Seguros` |
+| `COMPANY_NAME`              | Nombre de la compañía usado en el prompt del sistema                          | `C.A. de Seguros La Occidental` |
 | `SUPPORT_EMAIL`             | Correo de soporte que el asistente ofrece al usuario                          | `info@laoccidental.com`    |
 | `SUPPORT_PHONE`             | Teléfono de soporte que el asistente ofrece al usuario                        | (vacío)                    |
 | `CLAIMS_PHONE`              | Línea de siniestros/emergencias que Lucy da ante casos urgentes               | `0212-6204444`              |
@@ -163,7 +163,7 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `SMTP_SECURE`               | `"true"` si el proveedor usa TLS implícito (típicamente puerto 465); con STARTTLS (587) déjalo en `"false"` | `false` |
 | `SMTP_USER`                 | Usuario para autenticar con el servidor SMTP                                   | (vacío)                      |
 | `SMTP_PASS`                 | Contraseña para autenticar con el servidor SMTP                                | (vacío)                      |
-| `SMTP_FROM`                 | Remitente que verá el cliente en el correo con el código OTP                   | `"La Occidental C.A. de Seguros" <no-responder@laoccidental.com>` |
+| `SMTP_FROM`                 | Remitente que verá el cliente en el correo con el código OTP                   | `"C.A. de Seguros La Occidental" <no-responder@laoccidental.com>` |
 | `POLIZAS_FILE`              | Ruta del archivo JSON con los datos de pólizas (fixture, mientras no exista un sistema externo) | `data/polizas.json` |
 | `POLIZAS_API_URL`           | URL base de una API REST real de pólizas — si se define, `services/polizas.service.js` deja de leer `POLIZAS_FILE` y consulta esta API (ver [Base de datos de pólizas](#base-de-datos-de-pólizas)) | (vacío, usa el archivo local) |
 | `SINIESTROS_FILE`           | Ruta del archivo JSON con los siniestros (fixture, mientras no exista un sistema externo) | `data/siniestros.json` |
@@ -1215,4 +1215,4 @@ producción— está en **[WHATSAPP_SETUP.md](WHATSAPP_SETUP.md)**.
 
 ## Licencia
 
-Uso interno de La Occidental C.A. de Seguros.
+Uso interno de C.A. de Seguros La Occidental.

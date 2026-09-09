@@ -1,6 +1,6 @@
 /**
  * corredor.js
- * Portal de corredores (/corredor) — La Occidental C.A. de Seguros.
+ * Portal de corredores (/corredor) — C.A. de Seguros La Occidental.
  * Autenticación por JWT (token guardado en localStorage, enviado como
  * "Authorization: Bearer <token>" en cada petición — ver apiFetch), ruteo entre
  * vistas con la History API (no hay recarga de página al navegar), y un stream SSE

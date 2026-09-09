@@ -33,3 +33,9 @@ conversations.json
 # Estado interno de la sesión de Claude Code (lock de tareas programadas) — no es
 # parte del proyecto, no versionar.
 .claude/scheduled_tasks.lock
+
+# Instalador-Lucy.exe (empaquetado con instalador/construir-instalador.ps1) — binario
+# generado, no se versiona; se reconstruye cuando haga falta y se distribuye en el
+# .zip de entrega. No confundir con instalador/instalar.ps1, que SÍ se versiona.
+/instalador/*.exe
+/instalador/*.zip

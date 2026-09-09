@@ -1,6 +1,6 @@
 /**
  * chatbot.js
- * Widget de chat flotante "Lucy" para La Occidental C.A. de Seguros.
+ * Widget de chat flotante "Lucy" para C.A. de Seguros La Occidental.
  *
  * Uso: incluir chatbot.css y chatbot.js en cualquier página HTML.
  * Opcionalmente, definir `window.LO_CHATBOT_CONFIG` ANTES de cargar este script
@@ -40,7 +40,7 @@
     apiUrl: "/api/chat",
     assistantName: "Lucy",
     companyName: "La Occidental",
-    headerSubtitle: "Asistente virtual · La Occidental Seguros",
+    headerSubtitle: "Asistente virtual · Seguros La Occidental",
     avatarUrl: SCRIPT_DIR + "lucy-avatar.png",
     greeting:
       "¡Hola! 👋 Soy Lucy, la asistente virtual de La Occidental. Puedo ayudarte con cotizaciones, información de coberturas y reportes de siniestros. ¿En qué puedo ayudarte hoy?",

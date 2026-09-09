@@ -1,7 +1,7 @@
 {
   "name": "la-occidental-chatbot",
   "version": "1.0.0",
-  "description": "Chatbot web para La Occidental C.A. de Seguros, impulsado por la API de Anthropic (Claude)",
+  "description": "Chatbot web para C.A. de Seguros La Occidental, impulsado por la API de Anthropic (Claude)",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
@@ -15,7 +15,7 @@
     "anthropic",
     "la-occidental"
   ],
-  "author": "La Occidental C.A. de Seguros",
+  "author": "C.A. de Seguros La Occidental",
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
