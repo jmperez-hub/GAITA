@@ -1,6 +1,6 @@
 /**
  * server.js
- * Backend Node.js + Express para el chatbot de "La Occidental C.A. de Seguros".
+ * Backend Node.js + Express para el chatbot de "C.A. de Seguros La Occidental".
  * Expone un endpoint /api/chat que reenvía la conversación a la API de Anthropic
  * (Claude) y transmite la respuesta al navegador mediante Server-Sent Events (SSE).
  *
@@ -61,7 +61,7 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5";
 // classifyIntentAndEmotion) — una llamada aparte, corta, antes de la respuesta real;
 // no necesita el modelo grande de conversación.
 const CLAUDE_FAST_MODEL = process.env.CLAUDE_FAST_MODEL || "claude-haiku-4-5-20251001";
-const COMPANY_NAME = process.env.COMPANY_NAME || "La Occidental C.A. de Seguros";
+const COMPANY_NAME = process.env.COMPANY_NAME || "C.A. de Seguros La Occidental";
 const ASSISTANT_NAME = process.env.ASSISTANT_NAME || "Lucy";
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "info@laoccidental.com";
 const SUPPORT_PHONE = process.env.SUPPORT_PHONE || "";

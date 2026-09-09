@@ -1,6 +1,6 @@
 /**
  * admin.js
- * Panel de administración (/admin) — La Occidental C.A. de Seguros.
+ * Panel de administración (/admin) — C.A. de Seguros La Occidental.
  * Login simple + listado, búsqueda/filtros, detalle y exportación CSV de las
  * conversaciones guardadas en conversations.json (vía la API /api/admin/*).
  */
