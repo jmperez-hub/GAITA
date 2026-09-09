@@ -223,6 +223,17 @@ const WHATSAPP_VIDEO_MAX_BYTES = 16 * 1024 * 1024; // límite de adjuntos de Wha
 
 const VIDEO_CATALOG = [
   {
+    key: "bienvenida",
+    file: "bienvenida.mp4",
+    title: "Bienvenida a La Occidental",
+    // Sin triggers: no se activa por palabras clave, se usa específicamente en el
+    // mensaje de bienvenida (mismo criterio que la imagen "bienvenida" de
+    // MEDIA_CATALOG, a la que reemplaza en ese flujo — ver el primer contacto por
+    // WhatsApp y el saludo inicial del widget web).
+    triggers: [],
+    youtubeUrl: "",
+  },
+  {
     key: "reportar-siniestro",
     file: "como-reportar-siniestro.mp4",
     title: "Cómo reportar un siniestro",
@@ -4726,26 +4737,33 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
 
   // Primer contacto: bienvenida + menú, siempre — sin llamar a Claude todavía.
   if (isFirstContact) {
-    // Imagen de bienvenida, ANTES del texto (mismo criterio que el resto de imágenes
-    // por WhatsApp) — "siempre", igual que el audio de bienvenida más abajo.
-    const welcomeMedia = MEDIA_CATALOG.find((m) => m.key === "bienvenida");
-    let welcomeMediaAttachment = null;
-    if (welcomeMedia) {
+    // Video de bienvenida, ANTES del texto (mismo criterio que el resto de adjuntos
+    // por WhatsApp) — "siempre", igual que el audio de bienvenida más abajo. Usa el
+    // mismo mecanismo de entrega que los videos explicativos (comprime o cae a un
+    // enlace si supera el límite de 16 MB de WhatsApp — ver resolveWhatsappVideoDelivery).
+    const welcomeVideo = VIDEO_CATALOG.find((v) => v.key === "bienvenida");
+    let welcomeVideoAttachment = null;
+    if (welcomeVideo) {
       try {
-        const welcomeMediaUrl = await resolveWhatsappMediaUrl(welcomeMedia, baseUrl);
-        if (welcomeMediaUrl) {
-          await sendWhatsappMedia(from, welcomeMediaUrl);
-          welcomeMediaAttachment = resolveMediaAttachment(welcomeMedia);
+        const delivery = await resolveWhatsappVideoDelivery(welcomeVideo, baseUrl);
+        if (delivery) {
+          if (delivery.type === "media") {
+            await sendWhatsappMedia(from, delivery.url);
+          } else {
+            await sendWhatsappMessage(from, delivery.url);
+          }
+          const videoAttachment = resolveVideoAttachment(welcomeVideo);
+          welcomeVideoAttachment = videoAttachment ? { ...videoAttachment, whatsappDelivery: delivery.type } : null;
         }
       } catch (err) {
-        console.warn("[aviso] No se pudo enviar la imagen de bienvenida por WhatsApp:", err.message);
+        console.warn("[aviso] No se pudo enviar el video de bienvenida por WhatsApp:", err.message);
       }
     }
 
     const welcome = buildWhatsappWelcomeText();
     await sendWhatsappMessage(from, welcome);
     const welcomeMsgEntry = { role: "assistant", content: welcome, time: new Date().toISOString() };
-    if (welcomeMediaAttachment) welcomeMsgEntry.media = welcomeMediaAttachment;
+    if (welcomeVideoAttachment) welcomeMsgEntry.attachment = welcomeVideoAttachment;
     record.messages.push(welcomeMsgEntry);
     // Regla "Lucy responde con audio en la bienvenida, siempre" — no bloquea el envío
     // del texto (ya se envió arriba) ni la respuesta al webhook si falla.
