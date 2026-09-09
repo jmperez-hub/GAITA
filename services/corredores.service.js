@@ -113,11 +113,19 @@ function listarTodosCorredores() {
  *  correctos y la cuenta está activa, o `null` en cualquier otro caso (usuario no
  *  encontrado, contraseña incorrecta, cuenta desactivada) — nunca distingue el motivo
  *  en la respuesta (evita filtrar si un email existe o no). */
+// Hash de relleno (contraseña inventada, sin cuenta asociada) — se usa cuando el email
+// no existe o la cuenta está desactivada, para que bcrypt.compare() se ejecute IGUAL en
+// ese caso: si no, un email inexistente responde en <1ms mientras que uno válido con
+// contraseña incorrecta paga el costo de bcrypt (~50-100ms), un canal de temporización
+// que permite enumerar cuentas válidas midiendo la latencia de la respuesta.
+const DUMMY_PASSWORD_HASH = "$2a$10$/c4jmJNb6gN6hXwM.RHmQeS5qFcV1K7OvdNY7lhfxFmqvRK3wXmqm";
+
 async function autenticar(email, password) {
   const corredor = buscarPorEmail(email);
-  if (!corredor || !corredor.activo) return null;
-  const ok = await bcrypt.compare(String(password || ""), corredor.passwordHash);
-  if (!ok) return null;
+  const cuentaValida = Boolean(corredor && corredor.activo);
+  const hashParaComparar = cuentaValida ? corredor.passwordHash : DUMMY_PASSWORD_HASH;
+  const ok = await bcrypt.compare(String(password || ""), hashParaComparar);
+  if (!cuentaValida || !ok) return null;
   return toPublicCorredor(corredor);
 }
 
@@ -193,15 +201,26 @@ async function calcularComision(corredor, { desde, hasta } = {}) {
 
   const porMes = new Map();
   for (const p of polizas) {
-    if (!p.ultimo_pago) continue;
-    const mes = p.ultimo_pago.slice(0, 7); // "AAAA-MM"
-    if (desde && mes < desde) continue;
-    if (hasta && mes > hasta) continue;
-    const monto = Math.round(p.prima_anual * (pct / 100) * 100) / 100;
-    if (!porMes.has(mes)) porMes.set(mes, { mes, total: 0, polizas: [] });
-    const entry = porMes.get(mes);
-    entry.total = Math.round((entry.total + monto) * 100) / 100;
-    entry.polizas.push({ numero: p.numero, titular: p.titular, prima_anual: p.prima_anual, comision: monto });
+    // `p` puede venir de POLIZAS_API_URL (una API externa, en el futuro) — nunca se
+    // confía en que sus campos tengan el tipo/formato esperado. Un registro malformado
+    // (p. ej. `ultimo_pago` como número en vez de string) no debe tumbar TODO el
+    // cálculo de comisión — se salta ese registro y se sigue con el resto.
+    try {
+      if (!p.ultimo_pago) continue;
+      const mes = String(p.ultimo_pago).slice(0, 7); // "AAAA-MM"
+      if (!/^\d{4}-\d{2}$/.test(mes)) continue;
+      if (desde && mes < desde) continue;
+      if (hasta && mes > hasta) continue;
+      const primaAnual = Number(p.prima_anual);
+      if (!Number.isFinite(primaAnual)) continue;
+      const monto = Math.round(primaAnual * (pct / 100) * 100) / 100;
+      if (!porMes.has(mes)) porMes.set(mes, { mes, total: 0, polizas: [] });
+      const entry = porMes.get(mes);
+      entry.total = Math.round((entry.total + monto) * 100) / 100;
+      entry.polizas.push({ numero: p.numero, titular: p.titular, prima_anual: primaAnual, comision: monto });
+    } catch (err) {
+      console.warn("[aviso] Póliza con datos inválidos, se omite del cálculo de comisión:", p && p.numero, err.message);
+    }
   }
 
   const desglose = Array.from(porMes.values()).sort((a, b) => b.mes.localeCompare(a.mes));

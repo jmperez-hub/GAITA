@@ -1677,6 +1677,10 @@
               } catch (_e) {
                 /* ignorar */
               }
+              // El stream en vivo (modo supervisor) quedó abierto con el sessionId
+              // VIEJO — sin reconectar, un mensaje que el equipo mande desde /admin para
+              // la conversación actual nunca llegaría (server.js lo enruta por sessionId).
+              connectLiveStream();
             }
           }
         }

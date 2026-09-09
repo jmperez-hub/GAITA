@@ -158,6 +158,12 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
 | `CONVERSATIONS_FILE`        | Ruta del archivo JSON donde se guardan las conversaciones                     | `conversations.json`        |
 | `QUOTER_CONFIG_FILE`        | Ruta del archivo JSON de configuración del cotizador                          | `quoter-config.json`        |
 | `CLIENTES_FILE`             | Ruta del archivo JSON de memoria persistente de clientes (por cédula)         | `data/clientes.json`        |
+| `SMTP_HOST`                 | Host del servidor SMTP usado para enviar códigos OTP (ver [Verificación de identidad por código OTP](#verificación-de-identidad-por-código-otp)) — sin esto, los códigos solo se imprimen en el log (modo desarrollo) | (vacío) |
+| `SMTP_PORT`                 | Puerto del servidor SMTP                                                       | `587`                        |
+| `SMTP_SECURE`               | `"true"` si el proveedor usa TLS implícito (típicamente puerto 465); con STARTTLS (587) déjalo en `"false"` | `false` |
+| `SMTP_USER`                 | Usuario para autenticar con el servidor SMTP                                   | (vacío)                      |
+| `SMTP_PASS`                 | Contraseña para autenticar con el servidor SMTP                                | (vacío)                      |
+| `SMTP_FROM`                 | Remitente que verá el cliente en el correo con el código OTP                   | `"La Occidental C.A. de Seguros" <no-responder@laoccidental.com>` |
 | `POLIZAS_FILE`              | Ruta del archivo JSON con los datos de pólizas (fixture, mientras no exista un sistema externo) | `data/polizas.json` |
 | `POLIZAS_API_URL`           | URL base de una API REST real de pólizas — si se define, `services/polizas.service.js` deja de leer `POLIZAS_FILE` y consulta esta API (ver [Base de datos de pólizas](#base-de-datos-de-pólizas)) | (vacío, usa el archivo local) |
 | `SINIESTROS_FILE`           | Ruta del archivo JSON con los siniestros (fixture, mientras no exista un sistema externo) | `data/siniestros.json` |
@@ -353,6 +359,53 @@ ese cliente (abre el mismo modal de detalle que la pestaña "Conversaciones", co
 enlace de vuelta al perfil del cliente desde ahí); y consultar sus **pólizas reales**,
 tal como las tiene registradas el [sistema de pólizas](#base-de-datos-de-pólizas)
 (vigencia calculada al momento, prima, suma asegurada, corredor, siniestros activos).
+
+## Verificación de identidad por código OTP
+
+Saber la cédula (o el número de póliza) de alguien **no es prueba suficiente de que
+esa persona es el titular** — cualquiera que la conozca o la adivine podría, si no,
+hacerse pasar por un cliente y ver sus datos reales (pólizas, siniestros, notas
+internas). Antes de tratar a quien escribe como ese cliente, Lucy le pide que
+confirme su identidad con un código de un solo uso enviado a su correo.
+
+**Cuándo se pide y cuándo no (bypass de canal confiable):** si el mensaje llega por
+WhatsApp desde un número que ya coincide con el `telefono` guardado en el perfil del
+cliente, Lucy confía en ese canal (el propio WhatsApp ya es un segundo factor: solo el
+dueño del número puede escribir desde ahí) y **no pide OTP** — solo el saludo
+"¡Hola de nuevo, [nombre]!". En cualquier otro caso — widget web, un número de
+WhatsApp que no coincide con ninguno registrado, o un cliente nuevo con correo ya
+conocido — sí se exige el código.
+
+**Flujo (`iniciarVerificacionIdentidad` / `continuarVerificacionIdentidad` en
+`server.js`):**
+
+1. Lucy identifica al cliente por cédula o póliza (igual que antes).
+2. Si el canal no es de confianza, pide o confirma su correo (`correo@ejemplo.com`,
+   validado con una regex simple; dos intentos fallidos y se puede seguir sin
+   identificarse, igual que en el flujo original).
+3. Genera un código de 6 dígitos, lo guarda con expiración (`OTP_EXPIRY_MS`, 10
+   minutos) en `record.pendingVerification` — nunca en el perfil del cliente — y lo
+   envía por correo con [nodemailer](https://nodemailer.com/). El cliente ve el correo
+   enmascarado ("ca\*\*\*\*@example.com") para confirmar que es el suyo sin revelarlo
+   completo.
+4. El cliente escribe el código. Hasta `OTP_MAX_ATTEMPTS` (3) intentos fallidos por
+   envío; al agotarlos, la verificación queda "skipped" (igual salida que declinar
+   identificarse) y se le indica llamar a un asesor. Escribir "reenviar código" pide
+   uno nuevo, con un enfriamiento de `OTP_RESEND_COOLDOWN_MS` (60 s) para evitar abuso.
+5. Con el código correcto, la conversación continúa exactamente donde se había
+   quedado — incluida la apertura de un siniestro en curso (`handleSiniestroFlowGate`
+   delega en el mismo mecanismo antes de dejar avanzar el caso a nombre de alguien).
+
+**Sin SMTP configurado:** el código se imprime en el log del servidor en vez de
+enviarse por correo (`[MODO DESARROLLO — SMTP no configurado] Código OTP para
+correo@ejemplo.com: 123456`) — útil para desarrollo local, **nunca debe quedar así en
+producción**. Configura `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS` (ver
+[Variables de entorno](#variables-de-entorno-env)) para que salgan correos reales.
+
+> El código OTP vigente vive únicamente en memoria/`conversations.json`
+> (`record.pendingVerification`) y nunca se expone por la API — `GET
+> /api/admin/conversations/:id` lo excluye explícitamente de la respuesta antes de
+> enviarla al panel.
 
 ## Base de datos de pólizas
 

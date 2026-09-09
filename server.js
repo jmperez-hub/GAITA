@@ -34,6 +34,8 @@ if (FFMPEG_BINARY_PATH) ffmpeg.setFfmpegPath(FFMPEG_BINARY_PATH);
 // WhatsApp para adjuntos de imagen (ver resizeMediaForWhatsapp).
 const sharp = require("sharp");
 const jwt = require("jsonwebtoken");
+// Envío de los códigos OTP de verificación de identidad por correo (ver SMTP_* más abajo).
+const nodemailer = require("nodemailer");
 const cron = require("node-cron");
 // Horarios/umbrales de las tareas programadas (recordatorios de pólizas, seguimiento
 // de cotizaciones, valoración por inactividad) — ver iniciarScheduler() más abajo.
@@ -156,6 +158,57 @@ const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || "";
 const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "";
 const ELEVENLABS_CONFIGURED = Boolean(ELEVENLABS_API_KEY && ELEVENLABS_VOICE_ID);
 const TTS_AVAILABLE = ELEVENLABS_CONFIGURED || Boolean(OPENAI_API_KEY);
+
+// --- Verificación de identidad por código OTP (correo electrónico) ---
+// Saber la cédula o el número de póliza de alguien NUNCA alcanza por sí solo para que
+// Lucy trate a quien escribe como esa persona (ver "Motor de inteligencia" /
+// identificarOCrearCliente): antes de confiar en la identidad se manda un código de
+// 6 dígitos al correo del cliente y se le pide que lo escriba de vuelta — ver
+// iniciarVerificacionIdentidad/continuarVerificacionIdentidad más abajo. Única
+// excepción: un mensaje de WhatsApp que llega del mismo número ya guardado como
+// teléfono del cliente (controlar ese número ya es, en la práctica, un segundo factor).
+const SMTP_HOST = process.env.SMTP_HOST || "";
+const SMTP_PORT = Number(process.env.SMTP_PORT) || 587;
+const SMTP_SECURE = process.env.SMTP_SECURE === "true";
+const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM = process.env.SMTP_FROM || `"${COMPANY_NAME}" <no-responder@laoccidental.com>`;
+const SMTP_CONFIGURED = Boolean(SMTP_HOST && SMTP_USER && SMTP_PASS);
+const mailTransporter = SMTP_CONFIGURED
+  ? nodemailer.createTransport({ host: SMTP_HOST, port: SMTP_PORT, secure: SMTP_SECURE, auth: { user: SMTP_USER, pass: SMTP_PASS } })
+  : null;
+if (!SMTP_CONFIGURED) {
+  console.warn(
+    "[aviso] SMTP no configurado — los códigos OTP de verificación de identidad se mostrarán solo en el " +
+      "log del servidor (modo desarrollo), no se enviarán correos reales. Configura SMTP_HOST/SMTP_USER/SMTP_PASS en producción."
+  );
+}
+
+const OTP_LENGTH = 6;
+const OTP_EXPIRY_MS = 10 * 60 * 1000; // 10 minutos
+const OTP_MAX_ATTEMPTS = 3; // intentos de código incorrecto antes de abortar la verificación
+const OTP_MAX_EMAIL_ATTEMPTS = 3; // intentos de correo con formato inválido
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // mínimo entre reenvíos del código
+
+/** Envía el código OTP por correo — en modo desarrollo (sin SMTP configurado) lo deja
+ *  en el log del servidor en su lugar, para poder probar el flujo sin credenciales
+ *  reales (mismo criterio que el resto de proveedores opcionales del proyecto). */
+async function enviarCodigoOtp(email, codigo) {
+  if (!mailTransporter) {
+    console.warn(`[aviso] [MODO DESARROLLO — SMTP no configurado] Código OTP para ${email}: ${codigo}`);
+    return;
+  }
+  try {
+    await mailTransporter.sendMail({
+      from: SMTP_FROM,
+      to: email,
+      subject: `Tu código de verificación de ${COMPANY_NAME}`,
+      text: `Tu código para verificar tu identidad es: ${codigo}\n\nVence en 10 minutos. Si no lo solicitaste, ignora este correo.`,
+    });
+  } catch (err) {
+    console.error("Error al enviar el correo con el código OTP:", err.message);
+  }
+}
 
 // --- Videos explicativos de Lucy ---
 // Los archivos reales van en /public/assets/luci-videos/ con estos mismos nombres —
@@ -1036,6 +1089,232 @@ function buildPolizaAlertText(polizas) {
   return avisos.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Verificación de identidad (código OTP por correo) — ver SMTP_*/enviarCodigoOtp más
+// arriba. Se intercala entre "se reconoció una cédula/póliza en el texto" y "se
+// vincula la conversación a ese cliente": conocer el dato NUNCA es prueba suficiente
+// de identidad por sí solo.
+// ---------------------------------------------------------------------------
+
+function normalizeWhatsappForCompare(raw) {
+  return String(raw || "")
+    .replace(/^whatsapp:/i, "")
+    .replace(/[^\d+]/g, "");
+}
+
+/** ¿Ya hay confianza suficiente como para NO pedir un código OTP? Solo en un caso: el
+ *  mensaje llega por WhatsApp desde el MISMO número que ya está guardado como teléfono
+ *  de este cliente — controlar ese número de WhatsApp ya es, en la práctica, un
+ *  segundo factor. Si el cliente no tiene todavía un teléfono guardado (primera vez
+ *  que se identifica), o el mensaje viene del chat web (sin ese dato disponible), NO
+ *  hay confianza implícita y se pide el código igual. */
+function esIdentidadYaVerificadaPorCanal(cliente, seed) {
+  if (!seed || seed.canalPreferido !== "whatsapp" || !seed.telefono || !cliente.telefono) return false;
+  return normalizeWhatsappForCompare(seed.telefono) === normalizeWhatsappForCompare(cliente.telefono);
+}
+
+function generarCodigoOtp() {
+  return String(crypto.randomInt(0, 10 ** OTP_LENGTH)).padStart(OTP_LENGTH, "0");
+}
+
+/** Oculta parcialmente un correo para mostrarlo en el chat sin revelarlo completo
+ *  (p. ej. "ca**@ejemplo.com") — el destinatario ya conoce su propio correo, esto es
+ *  solo para que un tercero viendo la pantalla no lo lea completo. */
+function ocultarEmail(email) {
+  const [user, domain] = String(email).split("@");
+  if (!domain) return email;
+  const visible = user.slice(0, 2);
+  return `${visible}${"*".repeat(Math.max(1, user.length - visible.length))}@${domain}`;
+}
+
+/** Genera un código nuevo, lo guarda en `record.pendingVerification` y lo manda al
+ *  correo del cliente — usado tanto al iniciar la verificación como al reenviar. */
+async function iniciarEnvioOtp(record, cliente) {
+  const codigo = generarCodigoOtp();
+  record.identificationState = "otp-pending";
+  record.pendingVerification = {
+    cedula: cliente.cedula,
+    email: cliente.email,
+    otpCode: codigo,
+    otpExpiresAt: new Date(Date.now() + OTP_EXPIRY_MS).toISOString(),
+    otpAttempts: 0,
+    otpSentAt: new Date().toISOString(),
+  };
+  await enviarCodigoOtp(cliente.email, codigo);
+  return {
+    verified: false,
+    handled: true,
+    replyText:
+      `Te envié un código de verificación de 6 dígitos a ${ocultarEmail(cliente.email)}. Escríbemelo aquí ` +
+      `para confirmar tu identidad (vence en 10 minutos). Si no te llega, dime "reenviar código".`,
+  };
+}
+
+/**
+ * Se llama justo después de resolver un `cliente` a partir de una cédula/póliza
+ * recién reconocida — decide si la identidad ya se puede dar por buena
+ * (esIdentidadYaVerificadaPorCanal) o si hay que iniciar la verificación (pedir el
+ * correo si no lo tiene guardado, o mandar el código OTP directamente si ya lo tiene).
+ * Devuelve `{ verified: true, cliente }` si no hace falta nada más, o
+ * `{ verified: false, handled: true, replyText }` si hay que guionar un paso más — en
+ * ese caso el llamador debe devolver ese resultado tal cual y NO continuar con el
+ * resto de su propio flujo (vincular record.clienteId, saludar, etc.) todavía.
+ */
+async function iniciarVerificacionIdentidad(record, cliente, seed) {
+  if (esIdentidadYaVerificadaPorCanal(cliente, seed)) {
+    return { verified: true, cliente };
+  }
+  if (!cliente.email) {
+    record.identificationState = "asking-email";
+    record.pendingVerification = { cedula: cliente.cedula, emailAttempts: 0 };
+    return {
+      verified: false,
+      handled: true,
+      replyText:
+        "Antes de continuar necesito verificar que de verdad eres tú — ¿me compartes tu correo electrónico? " +
+        "Te voy a mandar un código de verificación.",
+    };
+  }
+  return iniciarEnvioOtp(record, cliente);
+}
+
+/**
+ * Continúa una verificación ya en curso (`record.identificationState` es
+ * "asking-email" u "otp-pending") con el texto que el usuario acaba de escribir —
+ * usada tanto por el gate de identificación genérico como por el paso de
+ * identificación del flujo de siniestros (ver handleSiniestroFlowGate), que
+ * comparten el mismo `record.identificationState`/`record.pendingVerification`
+ * para no duplicar esta lógica. Mismo contrato de devolución que
+ * iniciarVerificacionIdentidad.
+ */
+async function continuarVerificacionIdentidad(record, text) {
+  const pending = record.pendingVerification;
+  const cliente = pending ? getClienteByCedula(pending.cedula) : null;
+  if (!pending || !cliente) {
+    // Estado inconsistente (no debería ocurrir en un uso normal) — se reinicia el
+    // pedido en vez de dejar la conversación atascada.
+    record.identificationState = "asked";
+    record.pendingVerification = null;
+    return {
+      verified: false,
+      handled: true,
+      replyText: "Se me perdió el hilo — ¿me compartes de nuevo tu cédula o número de póliza?",
+    };
+  }
+
+  if (wantsToSkipIdentification(text)) {
+    record.identificationState = "skipped";
+    record.pendingVerification = null;
+    return {
+      verified: false,
+      handled: true,
+      replyText: "Entendido, seguimos sin verificar tu identidad por ahora. ¿En qué puedo ayudarte?",
+    };
+  }
+
+  if (record.identificationState === "asking-email") {
+    const email = text.trim();
+    if (!EMAIL_RE.test(email)) {
+      pending.emailAttempts = (pending.emailAttempts || 0) + 1;
+      if (pending.emailAttempts >= OTP_MAX_EMAIL_ATTEMPTS) {
+        record.identificationState = "skipped";
+        record.pendingVerification = null;
+        return {
+          verified: false,
+          handled: true,
+          replyText: `No pude tomar un correo válido. Comunícate con un asesor al ${CLAIMS_PHONE || SUPPORT_PHONE} para verificar tu identidad. ¿Te ayudo con algo más?`,
+        };
+      }
+      return {
+        verified: false,
+        handled: true,
+        replyText: 'Ese correo no parece válido. ¿Me lo confirmas de nuevo? (ej. "nombre@correo.com")',
+      };
+    }
+    touchCliente(cliente.cedula, { email });
+    cliente.email = email; // refleja el cambio en el objeto ya cargado, antes de mandar el código
+    return iniciarEnvioOtp(record, cliente);
+  }
+
+  // record.identificationState === "otp-pending"
+  const normalized = normalizeText(text);
+  if (/reenviar|no.*(lleg|recib)|otro codigo|nuevo codigo/.test(normalized)) {
+    const desdeUltimoEnvioMs = Date.now() - new Date(pending.otpSentAt).getTime();
+    if (desdeUltimoEnvioMs < OTP_RESEND_COOLDOWN_MS) {
+      return {
+        verified: false,
+        handled: true,
+        replyText: "Ya te mandé un código hace un momento — revisa también la carpeta de spam. Si en un minuto no llega, dime de nuevo.",
+      };
+    }
+    return iniciarEnvioOtp(record, cliente);
+  }
+
+  if (new Date(pending.otpExpiresAt).getTime() < Date.now()) {
+    return iniciarEnvioOtp(record, cliente); // vencido — se manda uno nuevo directamente
+  }
+
+  const codigoIngresado = text.replace(/\D/g, "");
+  if (codigoIngresado.length !== OTP_LENGTH || codigoIngresado !== pending.otpCode) {
+    pending.otpAttempts = (pending.otpAttempts || 0) + 1;
+    if (pending.otpAttempts >= OTP_MAX_ATTEMPTS) {
+      record.identificationState = "skipped";
+      record.pendingVerification = null;
+      return {
+        verified: false,
+        handled: true,
+        replyText: `No pudimos verificar el código. Por seguridad, comunícate con un asesor al ${CLAIMS_PHONE || SUPPORT_PHONE} para verificar tu identidad. ¿Te ayudo con algo más mientras tanto?`,
+      };
+    }
+    return {
+      verified: false,
+      handled: true,
+      replyText: `Ese código no es correcto. Te quedan ${OTP_MAX_ATTEMPTS - pending.otpAttempts} intento(s). ¿Me lo confirmas de nuevo?`,
+    };
+  }
+
+  record.pendingVerification = null;
+  return { verified: true, cliente };
+}
+
+/** Última parte, compartida, de una identificación ya VERIFICADA: vincula
+ *  `record.clienteId`, completa canal/teléfono, pide el nombre si es nuevo, o saluda
+ *  (con alertas de pólizas) si ya existe — exactamente lo que antes hacía el final de
+ *  resolveClientIdentification, ahora extraído para que el flujo de siniestros
+ *  también pueda invocarlo (aunque ese, por ahora, usa una versión sin el saludo — ver
+ *  handleSiniestroFlowGate). */
+async function completarIdentificacion(record, cliente, seed) {
+  record.clienteId = cliente.cedula;
+  const updatePatch = {};
+  if (seed && seed.canalPreferido) updatePatch.canalPreferido = seed.canalPreferido;
+  if (seed && seed.telefono && !cliente.telefono) updatePatch.telefono = seed.telefono;
+  if (Object.keys(updatePatch).length) touchCliente(cliente.cedula, updatePatch);
+
+  if (!cliente.nombre) {
+    record.identificationState = "asking-name";
+    return { handled: true, replyText: "¡Un gusto! Para completar tu perfil, ¿cuál es tu nombre completo?" };
+  }
+
+  record.identificationState = "done";
+
+  // Regla "alertas automáticas": si el cliente ya tenía nombre (o sea, no es la
+  // primera vez que se identifica), es un cliente que regresa — se le avisa aquí, al
+  // reconocerlo, de vencimientos próximos/vencidos o siniestros activos.
+  let alertText = "";
+  try {
+    const polizas = await polizasService.buscarPorCedula(cliente.cedula);
+    alertText = buildPolizaAlertText(polizas);
+  } catch (err) {
+    console.warn("[aviso] No se pudieron consultar las pólizas para la alerta de bienvenida:", err.message);
+  }
+
+  const greeting = `¡Hola de nuevo, ${cliente.nombre.split(" ")[0]}! ¿En qué te ayudo hoy?`;
+  return {
+    handled: true,
+    replyText: alertText ? `${greeting}\n\n${alertText}` : greeting,
+  };
+}
+
 /**
  * Gestiona el flujo de identificación del cliente (cédula o número de póliza) al
  * inicio de una conversación — un paso determinista, antes de involucrar a Claude,
@@ -1090,6 +1369,14 @@ async function handleClientIdentificationGate(record, userText, seed) {
     };
   }
 
+  // Verificación de identidad en curso (se le pidió el correo, o ya se le mandó el
+  // código OTP) — ver iniciarVerificacionIdentidad/continuarVerificacionIdentidad.
+  if (record.identificationState === "asking-email" || record.identificationState === "otp-pending") {
+    const verif = await continuarVerificacionIdentidad(record, text);
+    if (!verif.verified) return verif;
+    return completarIdentificacion(record, verif.cliente, seed);
+  }
+
   if (record.identificationState === "asking-name") {
     const cliente = record.clienteId ? getClienteByCedula(record.clienteId) : null;
     const nombre = text.trim().slice(0, 100);
@@ -1113,7 +1400,8 @@ async function handleClientIdentificationGate(record, userText, seed) {
  *  el mismo criterio para ubicar al cliente pero sin la lógica de saludo/alertas
  *  propia del gate genérico. Si `found.type === "cedula"`, siempre devuelve un
  *  cliente (lo crea si no existía — la cédula es la clave del registro). Si es una
- *  póliza y no se pudo ubicar ningún cliente, devuelve `null`. */
+ *  póliza y no se pudo ubicar ningún cliente, devuelve `null`. Ubicar al cliente
+ *  todavía NO significa que esté identificado — ver iniciarVerificacionIdentidad. */
 async function identificarOCrearCliente(found, seed) {
   if (found.type === "cedula") {
     return getClienteByCedula(found.value) || createCliente(found.value, seed);
@@ -1132,9 +1420,10 @@ async function identificarOCrearCliente(found, seed) {
 }
 
 /** Resuelve una cédula/póliza recién reconocida en el texto del usuario: busca (o
- *  crea, si es cédula y no existe) el perfil, vincula la conversación (`record.clienteId`)
- *  y decide el siguiente paso del flujo (pedir nombre si es nuevo, o saludar — con
- *  alertas de pólizas si aplica — si ya existe). */
+ *  crea, si es cédula y no existe) el perfil, e INICIA su verificación de identidad
+ *  (ver iniciarVerificacionIdentidad) antes de vincular la conversación a ese
+ *  cliente — solo una vez verificado se llama a completarIdentificacion (pedir
+ *  nombre si es nuevo, o saludar — con alertas de pólizas si aplica — si ya existe). */
 async function resolveClientIdentification(record, found, seed) {
   const cliente = await identificarOCrearCliente(found, seed);
 
@@ -1156,35 +1445,9 @@ async function resolveClientIdentification(record, found, seed) {
     };
   }
 
-  record.clienteId = cliente.cedula;
-  const updatePatch = {};
-  if (seed && seed.canalPreferido) updatePatch.canalPreferido = seed.canalPreferido;
-  if (seed && seed.telefono && !cliente.telefono) updatePatch.telefono = seed.telefono;
-  if (Object.keys(updatePatch).length) touchCliente(cliente.cedula, updatePatch);
-
-  if (!cliente.nombre) {
-    record.identificationState = "asking-name";
-    return { handled: true, replyText: "¡Un gusto! Para completar tu perfil, ¿cuál es tu nombre completo?" };
-  }
-
-  record.identificationState = "done";
-
-  // Regla "alertas automáticas": si el cliente ya tenía nombre (o sea, no es la
-  // primera vez que se identifica), es un cliente que regresa — se le avisa aquí, al
-  // reconocerlo, de vencimientos próximos/vencidos o siniestros activos.
-  let alertText = "";
-  try {
-    const polizas = await polizasService.buscarPorCedula(cliente.cedula);
-    alertText = buildPolizaAlertText(polizas);
-  } catch (err) {
-    console.warn("[aviso] No se pudieron consultar las pólizas para la alerta de bienvenida:", err.message);
-  }
-
-  const greeting = `¡Hola de nuevo, ${cliente.nombre.split(" ")[0]}! ¿En qué te ayudo hoy?`;
-  return {
-    handled: true,
-    replyText: alertText ? `${greeting}\n\n${alertText}` : greeting,
-  };
+  const verif = await iniciarVerificacionIdentidad(record, cliente, seed);
+  if (!verif.verified) return verif;
+  return completarIdentificacion(record, verif.cliente, seed);
 }
 
 // ---------------------------------------------------------------------------
@@ -1371,6 +1634,26 @@ async function handleSiniestroFlowGate(record, userText, seed) {
   }
 
   if (flow.step === "identificacion") {
+    // Si ya hay una verificación de identidad en curso (se le pidió el correo, o ya se
+    // le mandó el código OTP — ver iniciarVerificacionIdentidad), este mensaje es la
+    // respuesta a ESO, no una cédula/póliza nueva — nunca alcanza con solo conocer la
+    // cédula para abrir un siniestro a nombre de alguien.
+    if (record.identificationState === "asking-email" || record.identificationState === "otp-pending") {
+      const verifContinuada = await continuarVerificacionIdentidad(record, text);
+      if (!verifContinuada.verified) {
+        // Si la verificación se abandonó definitivamente (máximo de intentos, o el
+        // usuario pidió no continuar — continuarVerificacionIdentidad deja
+        // identificationState en "skipped" en ambos casos), no tiene sentido dejar
+        // este flujo de siniestro "colgado" esperando otro intento de identificación.
+        if (record.identificationState === "skipped") record.siniestroFlow = null;
+        return verifContinuada;
+      }
+      record.clienteId = verifContinuada.cliente.cedula;
+      record.identificationState = "done";
+      flow.step = "tipo";
+      return { handled: true, replyText: SINIESTRO_TIPO_QUESTION };
+    }
+
     if (wantsToSkipIdentification(text)) {
       record.siniestroFlow = null;
       return {
@@ -1411,9 +1694,17 @@ async function handleSiniestroFlowGate(record, userText, seed) {
         replyText: `No encontré la póliza ${found.value} en nuestros registros. ¿Me confirmas tu cédula (ej. "V-12345678")?`,
       };
     }
-    record.clienteId = cliente.cedula;
+
+    // Verificación de identidad (código OTP por correo, o confianza implícita si ya
+    // escribe desde el mismo WhatsApp guardado) — ver iniciarVerificacionIdentidad.
+    // Mientras no se verifique, `flow.step` se queda en "identificacion" (arriba, este
+    // mismo bloque atiende la respuesta al correo/código en el próximo turno).
+    const verif = await iniciarVerificacionIdentidad(record, cliente, seed);
+    if (!verif.verified) return verif;
+
+    record.clienteId = verif.cliente.cedula;
     record.identificationState = "done"; // ya no hace falta que el gate genérico la vuelva a pedir
-    if (seed && seed.canalPreferido && !cliente.canalPreferido) touchCliente(cliente.cedula, { canalPreferido: seed.canalPreferido });
+    if (seed && seed.canalPreferido && !verif.cliente.canalPreferido) touchCliente(verif.cliente.cedula, { canalPreferido: seed.canalPreferido });
     if (found.type === "poliza") flow.draft.poliza = found.value;
     flow.step = "tipo";
     return { handled: true, replyText: SINIESTRO_TIPO_QUESTION };
@@ -1690,17 +1981,33 @@ const RATING_ASK_TEXT = "¿Pude ayudarte con algo más? Califica tu experiencia 
 /** Interpreta la respuesta del usuario a RATING_ASK_TEXT: acepta un dígito 1-5, el
  *  número escrito en palabras, o una cadena de estrellas (⭐/★). `null` si no se pudo
  *  interpretar como una valoración (el mensaje sigue su curso normal, ver
- *  handleRatingGate). */
+ *  handleRatingGate).
+ *
+ *  Un dígito/palabra suelto SOLO cuenta como valoración si es (casi) todo el mensaje,
+ *  o va acompañado de una palabra que lo deje inequívoco ("estrella(s)", "/5", "de 5",
+ *  "puntos") — de lo contrario un mensaje normal que solo MENCIONA un número
+ *  ("necesito la póliza 5", "vivo en el apartamento 3", "quiero la opción 1") se
+ *  interpretaría por error como la respuesta a la pregunta de valoración y esa
+ *  pregunta real del usuario nunca llegaría a Claude. */
 function parseRating(text) {
-  const normalized = normalizeText(text);
+  const trimmed = String(text || "").trim();
+  const normalized = normalizeText(trimmed);
+  if (!normalized) return null;
+
+  // Una cadena de estrellas es inequívoca en cualquier mensaje.
+  const starCount = (trimmed.match(/⭐|★/g) || []).length;
+  if (starCount >= 1 && starCount <= 5) return starCount;
+
+  const isShortStandalone = normalized.length <= 12; // "5", "un 4!", "cinco" caben; una frase normal no
+  const hasRatingQualifier = /estrella|\/\s*5\b|de\s*5\b|puntos?\b/.test(normalized);
+  if (!isShortStandalone && !hasRatingQualifier) return null;
+
   const digitMatch = normalized.match(/\b([1-5])\b/);
   if (digitMatch) return Number(digitMatch[1]);
   const WORDS_TO_NUMBER = { uno: 1, una: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5 };
   for (const [word, n] of Object.entries(WORDS_TO_NUMBER)) {
     if (normalized.includes(word)) return n;
   }
-  const starCount = (text.match(/⭐|★/g) || []).length;
-  if (starCount >= 1 && starCount <= 5) return starCount;
   return null;
 }
 
@@ -3246,7 +3553,6 @@ async function enviarSeguimientoCotizaciones() {
 
   const umbralMs = cfg.horasSinCerrar * 60 * 60 * 1000;
   let procesadas = 0;
-  let huboEnvios = false;
 
   for (const record of Object.values(conversationsCache)) {
     if (!record.quotes) continue;
@@ -3265,15 +3571,20 @@ async function enviarSeguimientoCotizaciones() {
           `Hola${nombre ? " " + nombre.split(" ")[0] : ""} 👋, notamos que dejaste pendiente tu cotización de ` +
             `${RAMO_LABELS[quote.ramo] || quote.ramo} con ${COMPANY_NAME}. ¿Te ayudamos a continuar, o tienes alguna duda?`
         );
-        huboEnvios = true;
       }
 
+      // Se marca "ya contactada" haya o no teléfono disponible (nunca se reintenta esa
+      // misma cotización, ver comentario de la función) — por eso hay que persistir
+      // siempre que se procesó AL MENOS una, no solo cuando hubo un envío real: si esta
+      // corrida no encontró teléfono para ninguna, las marcas quedarían solo en memoria
+      // y se perderían (reintentando esas mismas cotizaciones sin sentido) si el
+      // servidor se reinicia antes de la próxima vez que sí haya un envío real.
       quote.seguimientoEnviado = true;
       procesadas++;
     }
   }
 
-  if (huboEnvios) persistConversations();
+  if (procesadas > 0) persistConversations();
   console.log(`[scheduler] Seguimiento de cotizaciones sin cerrar: ${procesadas} procesada(s).`);
 }
 
@@ -3305,10 +3616,16 @@ async function preguntarValoracionPorInactividad() {
     const inactivaMs = ahora - updatedMs;
     if (inactivaMs < umbralMs || inactivaMs > maxEdadMs) continue;
 
-    await sendWhatsappMessage(record.phone, RATING_ASK_TEXT);
-    record.messages.push({ role: "assistant", content: RATING_ASK_TEXT, time: new Date().toISOString() });
+    // `ratingState` se marca ANTES de mandar el WhatsApp (no después): sendWhatsappMessage
+    // nunca lanza (atrapa sus propios errores), así que no hay riesgo de marcar "asked"
+    // sin haber intentado el envío — pero si se marcara DESPUÉS, una ejecución solapada
+    // de esta misma tarea (ver el guard de solapamiento en iniciarScheduler) podría
+    // alcanzar a leer `record.ratingState` todavía vacío y mandar la pregunta dos veces
+    // a la misma conversación antes de que la primera termine de marcarla.
     record.ratingState = "asked";
+    record.messages.push({ role: "assistant", content: RATING_ASK_TEXT, time: new Date().toISOString() });
     touchConversationRecord(record);
+    await sendWhatsappMessage(record.phone, RATING_ASK_TEXT);
     preguntadas++;
   }
   if (preguntadas > 0) console.log(`[scheduler] Valoración por inactividad: ${preguntadas} conversación(es) preguntada(s).`);
@@ -3322,10 +3639,25 @@ function iniciarScheduler() {
   ];
   for (const [cfg, fn, nombre] of jobs) {
     if (!cfg || !cfg.enabled) continue;
+    // Evita que dos ejecuciones de la MISMA tarea se solapen (p. ej. si una corrida de
+    // "valoracionInactividad" — cada 2 minutos — tarda más de 2 minutos en procesar
+    // todas las conversaciones inactivas, por los envíos de WhatsApp secuenciales):
+    // sin este guard, la segunda corrida podría leer el mismo registro antes de que la
+    // primera termine de marcarlo, y mandarle la pregunta dos veces al mismo cliente.
+    let running = false;
     cron.schedule(
       cfg.cronExpression,
       () => {
-        fn().catch((err) => console.error(`[scheduler] Error en la tarea "${nombre}":`, err));
+        if (running) {
+          console.warn(`[scheduler] La tarea "${nombre}" todavía estaba corriendo — se omite esta ejecución para evitar solapamiento.`);
+          return;
+        }
+        running = true;
+        fn()
+          .catch((err) => console.error(`[scheduler] Error en la tarea "${nombre}":`, err))
+          .finally(() => {
+            running = false;
+          });
       },
       { timezone: schedulerConfig.timezone }
     );
@@ -4372,6 +4704,26 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
 
+  // Apertura/seguimiento de un siniestro (ver handleSiniestroFlowGate) — tiene
+  // prioridad incluso sobre la bienvenida de primer contacto y el menú de abajo: el
+  // pedido original exige una respuesta empática inmediata ante un accidente/robo/etc.,
+  // incluso si es el PRIMER mensaje que esta persona le escribe a Lucy — antes se
+  // revisaba después de la bienvenida/menú, lo que en la práctica le mandaba un "¡Hola,
+  // bienvenido! aquí tienes un menú" a alguien que acababa de decir "tuve un accidente".
+  // También intercepta cualquier mensaje ("hola" incluido) mientras haya un flujo de
+  // siniestro YA en curso (record.siniestroFlow), antes de que el disparador de menú de
+  // abajo pueda derailarlo.
+  const siniestroGate = await handleSiniestroFlowGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
+  if (siniestroGate.handled) {
+    await sendWhatsappMessage(from, siniestroGate.replyText);
+    const siniestroMsgEntry = { role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() };
+    record.messages.push(siniestroMsgEntry);
+    conversationsCache[phoneKey] = record;
+    touchConversationRecord(record);
+    notifyAdminWatchers(phoneKey, siniestroMsgEntry);
+    return;
+  }
+
   // Primer contacto: bienvenida + menú, siempre — sin llamar a Claude todavía.
   if (isFirstContact) {
     // Imagen de bienvenida, ANTES del texto (mismo criterio que el resto de imágenes
@@ -4411,8 +4763,18 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     return;
   }
 
-  // Disparador explícito de menú ("menú", "hola", etc.) — respuesta determinista.
-  if (isWhatsappMenuTrigger(userText)) {
+  // Disparador explícito de menú ("menú", "hola", etc.) — respuesta determinista. Se
+  // ignora mientras haya un flujo guionado esperando una respuesta puntual
+  // (identificación en curso, o la pregunta de valoración recién hecha) — de lo
+  // contrario un simple "hola" de cortesía a mitad de esos flujos los derailaría, en
+  // vez de tratarse como la respuesta que ese flujo está esperando.
+  const enFlujoGuionadoActivo =
+    record.identificationState === "asked" ||
+    record.identificationState === "asking-name" ||
+    record.identificationState === "asking-email" ||
+    record.identificationState === "otp-pending" ||
+    record.ratingState === "asked";
+  if (isWhatsappMenuTrigger(userText) && !enFlujoGuionadoActivo) {
     const menu = buildWhatsappMenuText();
     await sendWhatsappMessage(from, menu);
     const menuMsgEntry = { role: "assistant", content: menu, time: new Date().toISOString() };
@@ -4420,20 +4782,6 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
     conversationsCache[phoneKey] = record;
     touchConversationRecord(record);
     notifyAdminWatchers(phoneKey, menuMsgEntry);
-    return;
-  }
-
-  // Apertura/seguimiento de un siniestro (ver handleSiniestroFlowGate) — igual criterio
-  // que en /api/chat: tiene prioridad sobre la identificación genérica de abajo, incluso
-  // como primer mensaje, por la urgencia emocional de un reporte de accidente/robo/etc.
-  const siniestroGate = await handleSiniestroFlowGate(record, userText, { canalPreferido: "whatsapp", telefono: from });
-  if (siniestroGate.handled) {
-    await sendWhatsappMessage(from, siniestroGate.replyText);
-    const siniestroMsgEntry = { role: "assistant", content: siniestroGate.replyText, time: new Date().toISOString() };
-    record.messages.push(siniestroMsgEntry);
-    conversationsCache[phoneKey] = record;
-    touchConversationRecord(record);
-    notifyAdminWatchers(phoneKey, siniestroMsgEntry);
     return;
   }
 
@@ -4789,7 +5137,13 @@ app.get("/api/admin/conversations/:id", requireAdmin, (req, res) => {
   if (!record) {
     return res.status(404).json({ error: "Conversación no encontrada." });
   }
-  res.json({ conversation: record });
+  // `pendingVerification` (ver iniciarVerificacionIdentidad) guarda el código OTP en
+  // curso mientras se verifica una identidad — nunca debe salir del servidor por
+  // ninguna respuesta HTTP, ni siquiera hacia el panel de un admin autenticado
+  // (defensa en profundidad: una sesión de staff comprometida no debería poder leer el
+  // código vigente de un cliente).
+  const { pendingVerification, ...conversation } = record;
+  res.json({ conversation });
 });
 
 /**
@@ -5263,6 +5617,13 @@ app.post("/api/corredor/cotizar", quoteLimiter, requireCorredorAuth, async (req,
   if (!cfg) {
     return res.status(500).json({ error: "El cotizador no está configurado para ese ramo." });
   }
+  // `inputs` viene del cliente sin validar hasta aquí — a diferencia de nombre/cédula/
+  // vehículo (truncados más abajo antes de ir al PDF), sus arreglos (recargoIds,
+  // beneficiarioAges) no tenían ningún límite: un corredor autenticado podía mandar
+  // miles de entradas y generarCotizacionPdf las volcaría 1:1 en filas del PDF (PDF
+  // enorme/lento). Se acotan a un máximo razonable antes de calcular la cotización.
+  if (Array.isArray(inputs.recargoIds)) inputs.recargoIds = inputs.recargoIds.slice(0, 20);
+  if (Array.isArray(inputs.beneficiarioAges)) inputs.beneficiarioAges = inputs.beneficiarioAges.slice(0, 20);
   const resultado = ramo === "automoviles" ? corredoresService.cotizarRcv(inputs, cfg) : corredoresService.cotizarHcm(inputs, cfg);
   if (!resultado) {
     return res.status(400).json({ error: "No se pudo calcular la cotización con los datos suministrados." });

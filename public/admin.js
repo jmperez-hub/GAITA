@@ -340,8 +340,13 @@
       const res = await apiFetch(`/api/admin/conversations/${encodeURIComponent(id)}`);
       if (!res.ok) throw new Error("No se pudo cargar la conversación.");
       const data = await res.json();
+      // Si mientras esta petición estaba en curso el admin ya abrió OTRA conversación
+      // (dos clics rápidos en filas distintas), esta respuesta llegó tarde — no pisar
+      // el modal que ahora corresponde a esa otra conversación.
+      if (id !== currentConversationId) return;
       renderDetail(data.conversation);
     } catch (err) {
+      if (id !== currentConversationId) return;
       body.innerHTML = `<div class="lo-admin-empty">${escapeHtml(
         err.message || "Error al cargar la conversación."
       )}</div>`;
@@ -555,11 +560,17 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "No se pudo enviar el mensaje.");
       input.value = "";
-      const container = qs("lo-admin-live-messages");
-      if (container) {
-        container.insertAdjacentHTML("beforeend", messageRowHtml(data.message));
-        const body = qs("lo-admin-modal-body");
-        if (body) body.scrollTop = body.scrollHeight;
+      // Si "Ver en vivo" está activo, el propio stream SSE (ver toggleLiveMode) ya va a
+      // recibir este mismo mensaje como evento "message" y lo va a agregar — agregarlo
+      // también aquí lo duplicaría en la transcripción. Solo se agrega a mano cuando NO
+      // hay una conexión en vivo escuchando.
+      if (!liveEventSource) {
+        const container = qs("lo-admin-live-messages");
+        if (container) {
+          container.insertAdjacentHTML("beforeend", messageRowHtml(data.message));
+          const body = qs("lo-admin-modal-body");
+          if (body) body.scrollTop = body.scrollHeight;
+        }
       }
     } catch (err) {
       statusEl.textContent = err.message || "Error al enviar el mensaje.";
