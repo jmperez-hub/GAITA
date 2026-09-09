@@ -508,7 +508,14 @@
   text-overflow: ellipsis;
 }
 
-/* Video explicativo de Lucy (catálogo de videos) dentro de una burbuja de mensaje */
+/* Video explicativo de Lucy (catálogo de videos) dentro de una burbuja de mensaje.
+   El catálogo mezcla videos horizontales (16:9 — los explicativos) y verticales
+   (9:16 — bienvenida/despedida, formato "avatar hablando"): con un max-height fijo
+   pensado solo para 16:9, un video vertical terminaba reducido a ~113px de ancho
+   (se ve diminuto/ilegible, no realmente cortado en píxeles, pero da esa sensación).
+   max-height más alto absorbe ambos casos: los horizontales siguen limitados por
+   max-width (280×157, sin cambios) y los verticales ahora rinden ~191×340 en vez de
+   ~113×200. */
 
 .lo-msg-video-wrap {
   margin-bottom: 4px;
@@ -519,7 +526,7 @@
   display: block;
   width: 100%;
   max-width: 280px;
-  max-height: 200px;
+  max-height: 340px;
   border-radius: 14px;
   border: 1px solid var(--lo-borde);
   background: #000;

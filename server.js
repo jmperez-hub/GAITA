@@ -234,6 +234,16 @@ const VIDEO_CATALOG = [
     youtubeUrl: "",
   },
   {
+    key: "despedida",
+    file: "despedida.mp4",
+    title: "Despedida de Lucy",
+    // Sin triggers: no se activa por palabras clave, se usa específicamente cuando el
+    // cliente da por terminada la conversación — junto con RATING_ASK_TEXT (ver
+    // shouldAskRating / isSatisfactionSignal), no en el saludo inicial.
+    triggers: [],
+    youtubeUrl: "",
+  },
+  {
     key: "reportar-siniestro",
     file: "como-reportar-siniestro.mp4",
     title: "Cómo reportar un siniestro",
@@ -1988,6 +1998,9 @@ function isSatisfactionSignal(text, emocion) {
 }
 
 const RATING_ASK_TEXT = "¿Pude ayudarte con algo más? Califica tu experiencia del 1 al 5 ⭐ (1 = mal, 5 = excelente).";
+// Caption del video de despedida (VIDEO_CATALOG, key "despedida") que acompaña a
+// RATING_ASK_TEXT — ver shouldAskRating/shouldAskRatingWhatsapp más abajo.
+const DESPEDIDA_CAPTION = "¡Gracias por escribirnos! Fue un gusto ayudarte 💚";
 
 /** Interpreta la respuesta del usuario a RATING_ASK_TEXT: acepta un dígito 1-5, el
  *  número escrito en palabras, o una cadena de estrellas (⭐/★). `null` si no se pudo
@@ -4449,6 +4462,30 @@ app.post("/api/chat", chatLimiter, async (req, res) => {
         sendSse(res, "delta", { text: ratingSuffix });
         assistantMsgEntry.content += ratingSuffix;
         record.ratingState = "asked";
+
+        // Video de despedida (VIDEO_CATALOG), junto con la pregunta de valoración —
+        // mismo patrón que el video explicativo (matchedVideo, arriba): un mensaje
+        // aparte y guionado, no generado por Claude.
+        const despedidaVideo = VIDEO_CATALOG.find((v) => v.key === "despedida");
+        const despedidaAttachment = despedidaVideo ? resolveVideoAttachment(despedidaVideo) : null;
+        if (despedidaAttachment) {
+          const despedidaMsgEntry = {
+            role: "assistant",
+            content: DESPEDIDA_CAPTION,
+            time: new Date().toISOString(),
+            attachment: despedidaAttachment,
+          };
+          record.messages = [...record.messages, despedidaMsgEntry];
+          if (!clientClosed) {
+            sendSse(res, "video", {
+              caption: DESPEDIDA_CAPTION,
+              title: despedidaAttachment.title,
+              videoKey: despedidaAttachment.videoKey,
+              url: despedidaAttachment.url,
+              posterUrl: despedidaAttachment.posterUrl,
+            });
+          }
+        }
       }
 
       if (!clientClosed) {
@@ -4991,6 +5028,32 @@ async function handleIncomingWhatsappMessage(body, baseUrl) {
             console.warn("[aviso] No se pudo enviar el video por WhatsApp:", err.message);
           }
           if (record.clienteId) recordClientTopic(record.clienteId, TOPIC_TAG_BY_VIDEO_KEY[matchedVideo.key]);
+        }
+
+        // Video de despedida (VIDEO_CATALOG), junto con la pregunta de valoración —
+        // mismo criterio que /api/chat: se envía como un mensaje aparte, guionado.
+        if (shouldAskRatingWhatsapp) {
+          const despedidaVideo = VIDEO_CATALOG.find((v) => v.key === "despedida");
+          try {
+            const delivery = despedidaVideo ? await resolveWhatsappVideoDelivery(despedidaVideo, baseUrl) : null;
+            if (delivery) {
+              if (delivery.type === "media") {
+                await sendWhatsappMessage(from, DESPEDIDA_CAPTION);
+                await sendWhatsappMedia(from, delivery.url);
+              } else {
+                await sendWhatsappMessage(from, `${DESPEDIDA_CAPTION}\n${delivery.url}`);
+              }
+              const despedidaAttachment = resolveVideoAttachment(despedidaVideo);
+              record.messages.push({
+                role: "assistant",
+                content: DESPEDIDA_CAPTION,
+                time: new Date().toISOString(),
+                attachment: despedidaAttachment ? { ...despedidaAttachment, whatsappDelivery: delivery.type } : undefined,
+              });
+            }
+          } catch (err) {
+            console.warn("[aviso] No se pudo enviar el video de despedida por WhatsApp:", err.message);
+          }
         }
 
         notifyAdminWatchers(phoneKey, replyMsgEntry);
