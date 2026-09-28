@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Pruebas (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [18, 20, 22]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Verificar sintaxis del servidor y los servicios
+        run: |
+          node --check server.js
+          for f in services/*.js config/*.js; do node --check "$f"; done
+
+      - name: Ejecutar pruebas
+        run: npm test
+        env:
+          # Las pruebas nunca contactan servicios externos: tests/helpers/entorno.js
+          # vacía las credenciales y apunta los archivos de datos a una carpeta temporal.
+          NODE_ENV: test
+
+  audit:
+    name: Auditoría de dependencias (producción)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Solo alertas altas/críticas de las dependencias de producción bloquean el pipeline.
+      - run: npm audit --omit=dev --audit-level=high

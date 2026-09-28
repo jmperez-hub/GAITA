@@ -138,6 +138,31 @@ aplicación — puedes eliminarlo del repositorio si no lo necesitas.
    Haz clic en el botón flotante verde de la esquina inferior derecha para abrir el
    chat y comenzar a conversar con el asistente.
 
+## Pruebas automatizadas
+
+Las pruebas usan el ejecutor nativo de Node (`node --test`, sin dependencias extra) y
+viven en `tests/`:
+
+```
+tests/
+├── helpers/entorno.js   # Aísla cada archivo de pruebas: copia los fixtures de data/ a una
+│                        #   carpeta temporal y vacía las credenciales externas (Twilio,
+│                        #   OpenAI, SMTP...) para que NUNCA se toquen datos ni servicios reales
+└── unit/                # Identificación (cédula/póliza/OTP), lógica conversacional de Lucy,
+                         #   validaciones de entrada, y los tres servicios de services/
+```
+
+```bash
+npm test          # corre toda la suite
+npm run test:watch
+```
+
+`server.js` exporta la app de Express y sus funciones puras cuando se importa desde una
+prueba (solo abre el puerto y arranca el scheduler al ejecutarse directamente con
+`npm start`). El pipeline de GitHub Actions (`.github/workflows/ci.yml`) corre la suite en
+Node 18, 20 y 22 en cada push a `main` y en cada pull request, y bloquea alertas altas o
+críticas de `npm audit` en las dependencias de producción.
+
 ## Variables de entorno (`.env`)
 
 | Variable                   | Descripción                                                                 | Valor por defecto        |
