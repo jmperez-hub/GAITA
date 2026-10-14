@@ -20,8 +20,10 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # npm install (no npm ci) para que los overrides de seguridad del
+      # package.json se apliquen al resolver el árbol de dependencias.
       - name: Instalar dependencias
-        run: npm ci
+        run: npm install --no-audit
 
       - name: Verificar sintaxis del servidor y los servicios
         run: |
@@ -44,14 +46,13 @@ jobs:
         with:
           node-version: 22
 
-      # npm install (no npm ci) aplica los overrides de proxy-addr y qs
-      # definidos en package.json al regenerar el árbol de dependencias.
       - name: Instalar resolviendo overrides de seguridad
         run: npm install
 
-      # Aplica las correcciones no disruptivas restantes (nodemailer, sharp, multer).
-      - name: Aplicar correcciones disponibles
-        run: npm audit fix --omit=dev
+      # node-cron/uuid requiere --force (breaking change); || true evita que
+      # este step aborte el job antes de llegar a la verificación final.
+      - name: Aplicar correcciones no disruptivas
+        run: npm audit fix --omit=dev || true
 
       # Falla solo si quedan vulnerabilidades críticas sin corrección.
       - name: Verificar ausencia de vulnerabilidades críticas
