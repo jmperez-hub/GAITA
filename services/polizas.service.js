@@ -143,7 +143,11 @@ function verificarVigencia(poliza) {
   if (Number.isNaN(fin.getTime())) {
     return { vigente: false, porVencer: false, vencida: false, diasRestantes: null };
   }
-  const diasRestantes = Math.ceil((fin.getTime() - Date.now()) / (24 * 60 * 60 * 1000));
+  // Math.ceil sobre un número negativo lo acerca a cero: una póliza vencida AYER daba
+  // diasRestantes = 0 (y por tanto "vigente") durante todo el día siguiente. Para las
+  // vencidas se redondea hacia abajo, así "venció ayer" es -1 y se marca vencida.
+  const msRestantes = fin.getTime() - Date.now();
+  const diasRestantes = msRestantes >= 0 ? Math.ceil(msRestantes / (24 * 60 * 60 * 1000)) : Math.floor(msRestantes / (24 * 60 * 60 * 1000));
   return {
     vigente: diasRestantes >= 0,
     porVencer: diasRestantes >= 0 && diasRestantes <= 30,

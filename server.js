@@ -5967,28 +5967,60 @@ app.use((err, _req, res, _next) => {
   res.status(500).json({ error: "Error interno del servidor." });
 });
 
-app.listen(PORT, () => {
-  console.log(`✅ ${COMPANY_NAME} · Chatbot backend escuchando en http://localhost:${PORT}`);
-  console.log(`   Modelo configurado: ${CLAUDE_MODEL}`);
-  console.log(`   Panel de administración: http://localhost:${PORT}/admin`);
-  if (JWT_SECRET) {
-    console.log(`   Portal de corredores: http://localhost:${PORT}/corredor`);
-  } else {
-    console.warn("[aviso] JWT_SECRET no está definida — el portal de corredores (/corredor) quedará deshabilitado.");
-  }
-});
+// Solo se arranca el servidor (y las tareas en segundo plano) cuando este archivo se
+// ejecuta directamente (`npm start` / `node server.js`). Cuando lo importan las pruebas
+// automatizadas (ver tests/), se exporta la app sin abrir el puerto ni programar tareas.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`✅ ${COMPANY_NAME} · Chatbot backend escuchando en http://localhost:${PORT}`);
+    console.log(`   Modelo configurado: ${CLAUDE_MODEL}`);
+    console.log(`   Panel de administración: http://localhost:${PORT}/admin`);
+    if (JWT_SECRET) {
+      console.log(`   Portal de corredores: http://localhost:${PORT}/corredor`);
+    } else {
+      console.warn("[aviso] JWT_SECRET no está definida — el portal de corredores (/corredor) quedará deshabilitado.");
+    }
+  });
 
-// Chequeo periódico de "pólizas por vencer en 7 días" para las notificaciones en
-// tiempo real del portal de corredores — ver iniciarChequeoVencimientosCorredores().
-iniciarChequeoVencimientosCorredores();
+  // Chequeo periódico de "pólizas por vencer en 7 días" para las notificaciones en
+  // tiempo real del portal de corredores — ver iniciarChequeoVencimientosCorredores().
+  iniciarChequeoVencimientosCorredores();
 
-// Tareas programadas (node-cron): recordatorios de pólizas, seguimiento de
-// cotizaciones y valoración por inactividad — ver iniciarScheduler() y
-// config/scheduler.config.js.
-iniciarScheduler();
+  // Tareas programadas (node-cron): recordatorios de pólizas, seguimiento de
+  // cotizaciones y valoración por inactividad — ver iniciarScheduler() y
+  // config/scheduler.config.js.
+  iniciarScheduler();
 
-// En segundo plano (no bloquea el arranque): genera los posters/thumbnails que falten
-// para los videos del catálogo — ver ensureVideoPosters().
-ensureVideoPosters().catch((err) => {
-  console.error("Error al generar los posters de los videos:", err);
-});
+  // En segundo plano (no bloquea el arranque): genera los posters/thumbnails que falten
+  // para los videos del catálogo — ver ensureVideoPosters().
+  ensureVideoPosters().catch((err) => {
+    console.error("Error al generar los posters de los videos:", err);
+  });
+}
+
+// Exportado para las pruebas automatizadas (tests/) — no cambia el comportamiento en producción.
+module.exports = {
+  app,
+  normalizeCedula,
+  extractPoliza,
+  extractIdentification,
+  wantsToSkipIdentification,
+  ocultarEmail,
+  generarCodigoOtp,
+  esIdentidadYaVerificadaPorCanal,
+  detectSiniestroTrigger,
+  detectSiniestroTipo,
+  parseRating,
+  sanitizeSessionId,
+  normalizeText,
+  validateQuoterConfig,
+  sanitizeQuotePayload,
+  sanitizeMessages,
+  detectRealMimeType,
+  formatDurationLabel,
+  sanitizeOriginalName,
+  safeEqual,
+  csvEscape,
+  parseCookies,
+  splitTextIntoChunks,
+};
