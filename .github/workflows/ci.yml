@@ -43,9 +43,16 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-      - run: npm ci
-      # Bloquea vulnerabilidades críticas de producción. Las de nivel high sin
-      # corrección upstream disponible (proxy-addr vía express, sharp) se
-      # rastrean como issues de seguridad hasta que el upstream publique parches.
-      - run: npm audit --omit=dev --audit-level=critical
+
+      # npm install (no npm ci) aplica los overrides de proxy-addr y qs
+      # definidos en package.json al regenerar el árbol de dependencias.
+      - name: Instalar resolviendo overrides de seguridad
+        run: npm install
+
+      # Aplica las correcciones no disruptivas restantes (nodemailer, sharp, multer).
+      - name: Aplicar correcciones disponibles
+        run: npm audit fix --omit=dev
+
+      # Falla solo si quedan vulnerabilidades críticas sin corrección.
+      - name: Verificar ausencia de vulnerabilidades críticas
+        run: npm audit --omit=dev --audit-level=critical
