@@ -32,10 +32,10 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "node-cron": "^3.0.3",
-    "nodemailer": "^10.1.0",
+    "nodemailer": "^10.0.1",
     "pdf-parse": "^2.4.5",
     "pdfkit": "^0.15.2",
-    "sharp": "^0.35.5",
+    "sharp": "^0.35.4",
     "twilio": "^6.1.0"
   },
   "devDependencies": {
@@ -43,6 +43,8 @@
     "supertest": "^7.3.0"
   },
   "overrides": {
+    "nodemailer": ">=10.0.9",
+    "sharp": ">=0.35.5",
     "proxy-addr": ">=2.0.8",
     "qs": ">=6.15.4"
   },
