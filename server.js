@@ -19,6 +19,7 @@ const os = require("os");
 const crypto = require("crypto");
 const express = require("express");
 const cors = require("cors");
+const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const { PDFParse } = require("pdf-parse");
@@ -56,11 +57,11 @@ const corredoresService = require("./services/corredores.service");
 // ---------------------------------------------------------------------------
 
 const PORT = process.env.PORT || 3000;
-const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5";
+const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-opus-5-5";
 // Modelo rápido/económico para la clasificación de intención/emoción (ver
 // classifyIntentAndEmotion) — una llamada aparte, corta, antes de la respuesta real;
 // no necesita el modelo grande de conversación.
-const CLAUDE_FAST_MODEL = process.env.CLAUDE_FAST_MODEL || "claude-haiku-4-5-20251001";
+const CLAUDE_FAST_MODEL = process.env.CLAUDE_FAST_MODEL || "claude-haiku-5-5";
 const COMPANY_NAME = process.env.COMPANY_NAME || "La Occidental C.A. de Seguros";
 const ASSISTANT_NAME = process.env.ASSISTANT_NAME || "Lucy";
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || "info@laoccidental.com";
@@ -3301,6 +3302,7 @@ function csvEscape(value) {
 
 function issueCorredorToken(corredor) {
   return jwt.sign({ sub: corredor.id, email: corredor.email, nombre: corredor.nombre }, JWT_SECRET, {
+    algorithm: "HS256",
     expiresIn: CORREDOR_TOKEN_TTL_S,
   });
 }
@@ -3320,7 +3322,7 @@ function requireCorredorAuth(req, res, next) {
   }
   let payload;
   try {
-    payload = jwt.verify(token, JWT_SECRET);
+    payload = jwt.verify(token, JWT_SECRET, { algorithms: ["HS256"] });
   } catch (_err) {
     return res.status(401).json({ error: "Sesión inválida o expirada. Inicia sesión de nuevo." });
   }
@@ -3719,11 +3721,21 @@ function iniciarScheduler() {
 
 const app = express();
 
+// Confiar en el primer proxy delante del servidor (Nginx, Cloudflare, etc.)
+// para que req.ip refleje la IP real del cliente y el rate limiting funcione por usuario.
+app.set("trust proxy", 1);
+
+// Headers de seguridad HTTP: X-Content-Type-Options, X-Frame-Options, HSTS, etc.
+app.use(helmet());
+
 app.use(
   cors({
     origin(origin, callback) {
-      // Permite peticiones sin origin (curl, apps móviles) y orígenes en la lista blanca.
-      if (!origin || ALLOWED_ORIGINS.includes(origin)) {
+      // Peticiones sin origin (curl, apps móviles nativas) se permiten solo fuera de producción.
+      // En producción solo se aceptan orígenes de la lista blanca para evitar null-origin bypass.
+      if (origin && ALLOWED_ORIGINS.includes(origin)) {
+        callback(null, true);
+      } else if (!origin && process.env.NODE_ENV !== "production") {
         callback(null, true);
       } else {
         callback(new Error(`Origen no permitido por CORS: ${origin}`));
