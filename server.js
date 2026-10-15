@@ -6101,4 +6101,6 @@ module.exports = {
   csvEscape,
   parseCookies,
   splitTextIntoChunks,
+  issueSseToken,
+  consumeSseToken,
 };

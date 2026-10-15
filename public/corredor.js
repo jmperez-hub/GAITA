@@ -606,13 +606,21 @@
   // Notificaciones en tiempo real (SSE) + toasts
   // -------------------------------------------------------------------------
 
-  function startEventStream() {
+  async function startEventStream() {
     stopEventStream();
-    const token = getToken();
-    if (!token) return;
-    // EventSource no permite headers personalizados — el token va en la query string
-    // (única excepción a Authorization: Bearer en todo el portal, ver requireCorredorAuth).
-    const es = new EventSource(`/api/corredor/events?token=${encodeURIComponent(token)}`);
+    if (!getToken()) return;
+    // EventSource no permite headers personalizados. Se intercambia el JWT por un
+    // token de un solo uso (TTL 30 s) que viaja en la URL sin exponer el JWT real
+    // en logs de acceso del servidor ni en el historial del navegador.
+    let sseToken;
+    try {
+      const resp = await apiFetch("/api/corredor/events/auth", { method: "POST" });
+      if (!resp.ok) return;
+      sseToken = (await resp.json()).token;
+    } catch (_) {
+      return;
+    }
+    const es = new EventSource(`/api/corredor/events?token=${encodeURIComponent(sseToken)}`);
     es.addEventListener("siniestro-abierto", (ev) => {
       const data = JSON.parse(ev.data);
       showToast({
