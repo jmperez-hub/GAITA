@@ -1,0 +1,25 @@
+# terraform.tfvars.example — NONPROD
+# Copiar a terraform.tfvars (ignorado por git) y completar los {VALOR}.
+# Ver docs/pendientes.md para la lista completa de valores a obtener.
+
+region             = "us-east-1"
+cuenta_nonprod     = "{CUENTA_NONPROD}"       # 12 dígitos — cuenta AWS de nonprod
+cuenta_management  = "{CUENTA_MANAGEMENT}"    # 12 dígitos — cuenta raíz de la organización
+cuenta_respaldos   = "{CUENTA_RESPALDOS}"     # 12 dígitos — cuenta de respaldos/seguridad
+cuenta_seguridad   = "{CUENTA_SEGURIDAD}"     # 12 dígitos — delegado GuardDuty
+
+vpc_cidr           = "10.10.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+kubernetes_version = "1.31"
+
+ip_publica_caracas = "{IP_PUBLICA_CARACAS}"   # IP pública del router/firewall en Caracas
+bgp_asn_caracas    = 65000
+cidr_caracas       = ["{CIDR_CARACAS}"]       # Ej: ["192.168.10.0/24"]
+
+rol_salud_arn      = "{VALOR_ROL_SALUD_ARN}"  # ARN del rol del módulo de salud
+rol_backup_arn     = "{VALOR_ROL_BACKUP_ARN}" # ARN del rol del servicio de backups
+
+correos_alerta         = ["{CORREO_ALERTAS}"] # Ej: ["ti@laoccidental.com"]
+presupuesto_mensual_usd = "200"               # USD/mes límite de alerta
+
+dueno = "plataforma@laoccidental.com"

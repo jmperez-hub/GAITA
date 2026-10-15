@@ -1,0 +1,40 @@
+# Políticas Checkov para infra/aws — GAITAS · La Occidental de Seguros
+# Hard-fail en cifrado, logging y acceso público.
+
+framework:
+  - terraform
+
+check:
+  # S3
+  - CKV_AWS_19   # S3 bucket encryption
+  - CKV_AWS_21   # S3 versioning
+  - CKV_AWS_52   # S3 MFA delete
+  - CKV_AWS_145  # S3 KMS encryption (not SSE-S3)
+  - CKV2_AWS_6   # S3 public access block
+  - CKV2_AWS_62  # S3 event notification
+  # KMS
+  - CKV_AWS_7    # KMS rotation enabled
+  # CloudTrail
+  - CKV_AWS_35   # CloudTrail KMS encryption
+  - CKV_AWS_36   # CloudTrail log file validation
+  - CKV_AWS_67   # CloudTrail multi-region
+  # EKS
+  - CKV_AWS_37   # EKS control plane logging
+  - CKV_AWS_39   # EKS private endpoint
+  - CKV_AWS_58   # EKS secrets encryption
+  - CKV_AWS_337  # EKS node groups encrypted
+  # VPC / Network
+  - CKV_AWS_25   # Security group no unrestricted ingress
+  - CKV_AWS_130  # VPC default SG no traffic
+  # IAM
+  - CKV_AWS_40   # No inline IAM policies
+  - CKV_AWS_274  # IAM no admin policies
+  # GuardDuty
+  - CKV_AWS_86   # GuardDuty enabled
+
+skip_check:
+  # Omitir checks que requieren cuenta AWS real para inicializar estado
+  - CKV_AWS_144  # S3 cross-region replication (solo en prod, no aplica nonprod)
+
+soft_fail: false
+download_external_modules: false

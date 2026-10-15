@@ -1,0 +1,117 @@
+name: Infra — Nonprod (OpenTofu)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmacion:
+        description: "Escribe 'aplicar-nonprod' para confirmar el apply"
+        required: true
+        type: string
+
+concurrency:
+  group: infra-nonprod
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.10.3"
+  AWS_REGION: "us-east-1"
+
+permissions:
+  id-token: write   # Necesario para OIDC
+  contents: read
+
+jobs:
+  plan:
+    name: "tofu plan — nonprod"
+    runs-on: ubuntu-latest
+    environment: nonprod   # Requiere aprobación manual en GitHub Environments
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TF_VERSION }}
+
+      - name: Configurar credenciales AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.CUENTA_NONPROD }}:role/gaitas-ci-nonprod
+          aws-region: ${{ env.AWS_REGION }}
+          # Credenciales efímeras vía OIDC — nunca claves de acceso estáticas
+
+      - name: tofu fmt — verificar formato
+        working-directory: infra/aws
+        run: tofu fmt -check -recursive
+
+      - name: tofu init
+        working-directory: infra/aws/envs/nonprod
+        run: |
+          tofu init \
+            -backend-config="bucket=gaitas-tofu-estado-${{ secrets.CUENTA_NONPROD }}" \
+            -backend-config="kms_key_id=alias/gaitas-tofu-estado-nonprod"
+
+      - name: tofu validate
+        working-directory: infra/aws/envs/nonprod
+        run: tofu validate
+
+      - name: tofu plan
+        working-directory: infra/aws/envs/nonprod
+        run: |
+          tofu plan \
+            -var="cuenta_nonprod=${{ secrets.CUENTA_NONPROD }}" \
+            -var="cuenta_management=${{ secrets.CUENTA_MANAGEMENT }}" \
+            -var="cuenta_respaldos=${{ secrets.CUENTA_RESPALDOS }}" \
+            -var="cuenta_seguridad=${{ secrets.CUENTA_SEGURIDAD }}" \
+            -var="ip_publica_caracas=${{ secrets.IP_PUBLICA_CARACAS }}" \
+            -var='cidr_caracas=["${{ secrets.CIDR_CARACAS }}"]' \
+            -var='correos_alerta=["${{ secrets.CORREO_ALERTAS }}"]' \
+            -var="rol_salud_arn=${{ secrets.ROL_SALUD_ARN }}" \
+            -var="rol_backup_arn=${{ secrets.ROL_BACKUP_ARN }}" \
+            -out=tfplan.bin
+
+      - name: Subir plan como artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-nonprod-${{ github.run_id }}
+          path: infra/aws/envs/nonprod/tfplan.bin
+          retention-days: 5
+
+  apply:
+    name: "tofu apply — nonprod"
+    runs-on: ubuntu-latest
+    needs: plan
+    environment: nonprod   # Segunda aprobación para el apply
+    if: github.event.inputs.confirmacion == 'aplicar-nonprod'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: ${{ env.TF_VERSION }}
+
+      - name: Configurar credenciales AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.CUENTA_NONPROD }}:role/gaitas-ci-nonprod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: tofu init
+        working-directory: infra/aws/envs/nonprod
+        run: |
+          tofu init \
+            -backend-config="bucket=gaitas-tofu-estado-${{ secrets.CUENTA_NONPROD }}" \
+            -backend-config="kms_key_id=alias/gaitas-tofu-estado-nonprod"
+
+      - name: Descargar plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-nonprod-${{ github.run_id }}
+          path: infra/aws/envs/nonprod/
+
+      - name: tofu apply
+        working-directory: infra/aws/envs/nonprod
+        run: tofu apply -auto-approve tfplan.bin

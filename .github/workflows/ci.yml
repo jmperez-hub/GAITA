@@ -57,3 +57,51 @@ jobs:
       # Falla solo si quedan vulnerabilidades críticas sin corrección.
       - name: Verificar ausencia de vulnerabilidades críticas
         run: npm audit --omit=dev --audit-level=critical
+
+  infra:
+    name: Infra — validación OpenTofu + Checkov
+    runs-on: ubuntu-latest
+    if: |
+      contains(toJson(github.event.commits.*.modified), 'infra/') ||
+      contains(toJson(github.event.commits.*.added), 'infra/') ||
+      github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar OpenTofu
+        uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: "1.10.3"
+
+      - name: tofu fmt — verificar formato
+        working-directory: infra/aws
+        run: tofu fmt -check -recursive
+
+      - name: tofu validate — nonprod (sin backend)
+        working-directory: infra/aws/envs/nonprod
+        run: |
+          tofu init -backend=false
+          tofu validate
+
+      - name: Instalar Checkov
+        run: pip install checkov
+
+      - name: Checkov — análisis de seguridad
+        working-directory: infra/aws
+        run: |
+          checkov \
+            --directory . \
+            --config-file .checkov.yaml \
+            --output cli \
+            --output junitxml \
+            --output-file-path . \
+            --soft-fail false
+        continue-on-error: false
+
+      - name: Publicar resultados Checkov
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkov-results-${{ github.run_id }}
+          path: infra/aws/results_junitxml.xml
+          retention-days: 30
