@@ -4,7 +4,7 @@ locals {
     proyecto         = "gaitas"
     entorno          = var.entorno
     "nivel-servicio" = var.nivel_servicio
-    dueño            = var.dueno
+    dueno            = var.dueno
   }
 
   bucket_name = "gaitas-respaldos-${var.cuenta_id}"
@@ -99,10 +99,10 @@ resource "aws_s3_bucket_policy" "respaldos" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "DenyNonTLS"
-        Effect = "Deny"
+        Sid       = "DenyNonTLS"
+        Effect    = "Deny"
         Principal = "*"
-        Action   = "s3:*"
+        Action    = "s3:*"
         Resource = [
           "arn:aws:s3:::${local.bucket_name}",
           "arn:aws:s3:::${local.bucket_name}/*"
@@ -112,8 +112,8 @@ resource "aws_s3_bucket_policy" "respaldos" {
         }
       },
       {
-        Sid    = "AllowBackupRoleReadWrite"
-        Effect = "Allow"
+        Sid       = "AllowBackupRoleReadWrite"
+        Effect    = "Allow"
         Principal = { AWS = var.rol_backup_arn }
         Action = [
           "s3:GetObject",
@@ -129,8 +129,8 @@ resource "aws_s3_bucket_policy" "respaldos" {
         ]
       },
       {
-        Sid    = "DenyObjectLockBypass"
-        Effect = "Deny"
+        Sid       = "DenyObjectLockBypass"
+        Effect    = "Deny"
         Principal = "*"
         Action = [
           "s3:BypassGovernanceRetention",
@@ -144,4 +144,9 @@ resource "aws_s3_bucket_policy" "respaldos" {
   })
 
   depends_on = [aws_s3_bucket_public_access_block.respaldos]
+}
+
+resource "aws_s3_bucket_notification" "respaldos" {
+  bucket      = aws_s3_bucket.respaldos.id
+  eventbridge = true
 }

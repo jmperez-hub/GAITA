@@ -4,7 +4,7 @@ locals {
     proyecto         = "gaitas"
     entorno          = var.entorno
     "nivel-servicio" = var.nivel_servicio
-    dueño            = var.dueno
+    dueno            = var.dueno
   }
 }
 
@@ -45,25 +45,25 @@ resource "aws_kms_key" "datos_salud" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AllowAccountRoot"
-        Effect = "Allow"
+        Sid       = "AllowAccountRoot"
+        Effect    = "Allow"
         Principal = { AWS = "arn:aws:iam::${var.cuenta_id}:root" }
-        Action   = "kms:*"
-        Resource = "*"
+        Action    = "kms:*"
+        Resource  = "*"
       },
       {
-        Sid    = "AllowSaludModuleEncrypt"
-        Effect = "Allow"
+        Sid       = "AllowSaludModuleEncrypt"
+        Effect    = "Allow"
         Principal = { AWS = var.rol_salud_arn }
-        Action   = ["kms:GenerateDataKey", "kms:Decrypt"]
-        Resource = "*"
+        Action    = ["kms:GenerateDataKey", "kms:Decrypt"]
+        Resource  = "*"
       },
       {
-        Sid    = "DenyCloudTrailLogging"
-        Effect = "Deny"
+        Sid       = "DenyCloudTrailLogging"
+        Effect    = "Deny"
         Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action   = "kms:GenerateDataKey"
-        Resource = "*"
+        Action    = "kms:GenerateDataKey"
+        Resource  = "*"
       },
     ]
   })

@@ -8,7 +8,7 @@ locals {
     proyecto         = "gaitas"
     entorno          = var.entorno
     "nivel-servicio" = var.nivel_servicio
-    dueño            = var.dueno
+    dueno            = var.dueno
   }
 }
 
@@ -22,6 +22,7 @@ resource "aws_ssoadmin_permission_set" "admin_plataforma" {
 }
 
 resource "aws_ssoadmin_managed_policy_attachment" "admin_plataforma" {
+  #checkov:skip=CKV_AWS_274: permission set break-glass para equipo de plataforma — acceso temporal supervisado vía SSO, sin claves de larga duración
   instance_arn       = local.sso_instance_arn
   permission_set_arn = aws_ssoadmin_permission_set.admin_plataforma.arn
   managed_policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"

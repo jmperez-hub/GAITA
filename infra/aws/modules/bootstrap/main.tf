@@ -9,7 +9,7 @@ locals {
     proyecto         = "gaitas"
     entorno          = var.entorno
     "nivel-servicio" = var.nivel_servicio
-    dueño            = var.dueno
+    dueno            = var.dueno
     bootstrap        = "true"
   }
 }
@@ -73,11 +73,11 @@ resource "aws_s3_bucket_policy" "estado" {
         }
       },
       {
-        Sid    = "AllowCIRole"
-        Effect = "Allow"
+        Sid       = "AllowCIRole"
+        Effect    = "Allow"
         Principal = { AWS = var.rol_ci_arn }
-        Action = ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"]
-        Resource = [aws_s3_bucket.estado.arn, "${aws_s3_bucket.estado.arn}/*"]
+        Action    = ["s3:GetObject", "s3:PutObject", "s3:ListBucket", "s3:DeleteObject"]
+        Resource  = [aws_s3_bucket.estado.arn, "${aws_s3_bucket.estado.arn}/*"]
       },
     ]
   })
@@ -94,4 +94,9 @@ resource "aws_kms_key" "estado" {
 resource "aws_kms_alias" "estado" {
   name          = "alias/gaitas-tofu-estado-${var.entorno}"
   target_key_id = aws_kms_key.estado.key_id
+}
+
+resource "aws_s3_bucket_notification" "estado" {
+  bucket      = aws_s3_bucket.estado.id
+  eventbridge = true
 }

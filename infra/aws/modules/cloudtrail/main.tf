@@ -5,7 +5,7 @@ locals {
     proyecto         = "gaitas"
     entorno          = var.entorno
     "nivel-servicio" = var.nivel_servicio
-    dueño            = var.dueno
+    dueno            = var.dueno
   }
 }
 
@@ -59,21 +59,21 @@ resource "aws_s3_bucket_policy" "cloudtrail" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "AWSCloudTrailAclCheck"
-        Effect = "Allow"
+        Sid       = "AWSCloudTrailAclCheck"
+        Effect    = "Allow"
         Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action   = "s3:GetBucketAcl"
-        Resource = aws_s3_bucket.cloudtrail.arn
+        Action    = "s3:GetBucketAcl"
+        Resource  = aws_s3_bucket.cloudtrail.arn
         Condition = {
           StringEquals = { "AWS:SourceArn" = "arn:aws:cloudtrail:${var.region}:${var.cuenta_management}:trail/gaitas-org-trail" }
         }
       },
       {
-        Sid    = "AWSCloudTrailWrite"
-        Effect = "Allow"
+        Sid       = "AWSCloudTrailWrite"
+        Effect    = "Allow"
         Principal = { Service = "cloudtrail.amazonaws.com" }
-        Action   = "s3:PutObject"
-        Resource = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/*"
+        Action    = "s3:PutObject"
+        Resource  = "${aws_s3_bucket.cloudtrail.arn}/AWSLogs/*"
         Condition = {
           StringEquals = {
             "s3:x-amz-acl"  = "bucket-owner-full-control"
@@ -100,4 +100,9 @@ resource "aws_cloudtrail" "org" {
   }
 
   tags = local.tags
+}
+
+resource "aws_s3_bucket_notification" "cloudtrail" {
+  bucket      = aws_s3_bucket.cloudtrail.id
+  eventbridge = true
 }

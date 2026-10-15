@@ -94,8 +94,7 @@ jobs:
             --config-file .checkov.yaml \
             --output cli \
             --output junitxml \
-            --output-file-path . \
-            --soft-fail false
+            --output-file-path .
         continue-on-error: false
 
       - name: Publicar resultados Checkov

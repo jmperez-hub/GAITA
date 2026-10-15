@@ -32,13 +32,13 @@ module "kms" {
 module "cloudtrail" {
   source = "../../modules/cloudtrail"
 
-  cuenta_respaldos        = var.cuenta_respaldos
-  cuenta_management       = var.cuenta_management
-  region                  = var.region
-  kms_key_arn_respaldos   = module.kms.respaldos_key_arn
-  entorno                 = "nonprod"
-  nivel_servicio          = "medio"
-  dueno                   = var.dueno
+  cuenta_respaldos      = var.cuenta_respaldos
+  cuenta_management     = var.cuenta_management
+  region                = var.region
+  kms_key_arn_respaldos = module.kms.respaldos_key_arn
+  entorno               = "nonprod"
+  nivel_servicio        = "medio"
+  dueno                 = var.dueno
 }
 
 module "guardduty" {
@@ -53,13 +53,13 @@ module "guardduty" {
 module "network" {
   source = "../../modules/network"
 
-  region                  = var.region
-  vpc_cidr                = var.vpc_cidr
-  availability_zones      = var.availability_zones
-  kms_key_arn_plataforma  = module.kms.plataforma_key_arn
-  entorno                 = "nonprod"
-  nivel_servicio          = "medio"
-  dueno                   = var.dueno
+  region                 = var.region
+  vpc_cidr               = var.vpc_cidr
+  availability_zones     = var.availability_zones
+  kms_key_arn_plataforma = module.kms.plataforma_key_arn
+  entorno                = "nonprod"
+  nivel_servicio         = "medio"
+  dueno                  = var.dueno
 }
 
 module "eks" {
@@ -93,14 +93,14 @@ module "backups_bucket" {
 module "vpn_caracas" {
   source = "../../modules/vpn-caracas"
 
-  vpc_id                  = module.network.vpc_id
-  ip_publica_caracas      = var.ip_publica_caracas
-  bgp_asn_caracas         = var.bgp_asn_caracas
-  cidr_caracas            = var.cidr_caracas
-  route_table_privada_id  = module.network.private_route_table_id
-  entorno                 = "nonprod"
-  nivel_servicio          = "medio"
-  dueno                   = var.dueno
+  vpc_id                 = module.network.vpc_id
+  ip_publica_caracas     = var.ip_publica_caracas
+  bgp_asn_caracas        = var.bgp_asn_caracas
+  cidr_caracas           = var.cidr_caracas
+  route_table_privada_id = module.network.private_route_table_id
+  entorno                = "nonprod"
+  nivel_servicio         = "medio"
+  dueno                  = var.dueno
 }
 
 module "budgets" {

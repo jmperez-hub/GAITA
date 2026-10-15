@@ -32,9 +32,8 @@ check:
   # GuardDuty
   - CKV_AWS_86   # GuardDuty enabled
 
-skip_check:
+skip-check:
   # Omitir checks que requieren cuenta AWS real para inicializar estado
   - CKV_AWS_144  # S3 cross-region replication (solo en prod, no aplica nonprod)
 
-soft_fail: false
-download_external_modules: false
+download-external-modules: false

@@ -33,3 +33,9 @@ conversations.json
 # Estado interno de la sesión de Claude Code (lock de tareas programadas) — no es
 # parte del proyecto, no versionar.
 .claude/scheduled_tasks.lock
+
+# OpenTofu / Terraform generated files
+**/.terraform/
+**/*.tfplan
+**/tfplan.bin
+**/.terraform.lock.hcl
