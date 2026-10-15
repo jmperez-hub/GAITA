@@ -17,6 +17,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -83,6 +84,10 @@ const MAX_MESSAGE_LENGTH = 4000; // caracteres por mensaje de usuario
 
 // --- Panel de administración ---
 const ADMIN_USERNAME = "admin";
+// ADMIN_PASSWORD_HASH (bcrypt) tiene prioridad sobre ADMIN_PASSWORD (texto plano).
+// Para generar el hash: node -e "console.log(require('bcryptjs').hashSync('tu-contraseña', 12))"
+// Se recomienda migrar a ADMIN_PASSWORD_HASH y eliminar ADMIN_PASSWORD del entorno.
+const ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || "";
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "";
 const ADMIN_SESSION_TTL_MS = Number(process.env.ADMIN_SESSION_TTL_MS) || 8 * 60 * 60 * 1000; // 8h
 const ADMIN_COOKIE_NAME = "lo_admin_session";
@@ -633,10 +638,16 @@ if (!process.env.ANTHROPIC_API_KEY) {
   );
 }
 
-if (!ADMIN_PASSWORD) {
+if (!ADMIN_PASSWORD_HASH && !ADMIN_PASSWORD) {
   console.warn(
-    "[aviso] ADMIN_PASSWORD no está definida. El panel de administración (/admin) " +
-      "permanecerá deshabilitado hasta que la configures en tu archivo .env."
+    "[aviso] ADMIN_PASSWORD_HASH (recomendado) ni ADMIN_PASSWORD están definidas. " +
+      "El panel de administración (/admin) permanecerá deshabilitado."
+  );
+} else if (!ADMIN_PASSWORD_HASH && ADMIN_PASSWORD) {
+  console.warn(
+    "[seguridad] ADMIN_PASSWORD está definida en texto plano. " +
+      "Se recomienda migrar a ADMIN_PASSWORD_HASH (bcrypt). " +
+      "Ver comentario en server.js junto a ADMIN_PASSWORD_HASH."
   );
 }
 
@@ -3344,6 +3355,33 @@ function requireCorredorAuth(req, res, next) {
 /** @type {Map<string, Set<import('express').Response>>} corredorId -> conexiones SSE abiertas */
 const corredorEventStreams = new Map();
 
+// Tokens de un solo uso para el stream SSE (/api/corredor/events?token=).
+// El JWT completo NO viaja en la URL (queda en logs de acceso); en su lugar el cliente
+// pide primero POST /api/corredor/events/auth (con el JWT en Authorization: Bearer) y
+// recibe un UUID con TTL de 30 s que usa una sola vez para abrir el EventSource.
+const sseTokens = new Map(); // uuid → { corredorId, expiresAt }
+
+function issueSseToken(corredorId) {
+  const token = crypto.randomUUID();
+  sseTokens.set(token, { corredorId, expiresAt: Date.now() + 30_000 });
+  return token;
+}
+
+function consumeSseToken(token) {
+  const entry = sseTokens.get(token);
+  if (!entry) return null;
+  sseTokens.delete(token); // single-use: se elimina al consumirlo
+  if (Date.now() > entry.expiresAt) return null;
+  return entry.corredorId;
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [tok, entry] of sseTokens) {
+    if (now > entry.expiresAt) sseTokens.delete(tok);
+  }
+}, 60_000).unref();
+
 function registerCorredorEventStream(corredorId, res) {
   if (!corredorEventStreams.has(corredorId)) corredorEventStreams.set(corredorId, new Set());
   corredorEventStreams.get(corredorId).add(res);
@@ -5197,15 +5235,22 @@ app.get("/admin", (_req, res) => {
 });
 
 app.post("/api/admin/login", loginLimiter, (req, res) => {
-  if (!ADMIN_PASSWORD) {
+  if (!ADMIN_PASSWORD_HASH && !ADMIN_PASSWORD) {
     return res.status(500).json({
-      error: "El panel de administración no está configurado (falta ADMIN_PASSWORD en el servidor).",
+      error: "El panel de administración no está configurado (falta ADMIN_PASSWORD_HASH en el servidor).",
     });
   }
 
   const { username, password } = req.body || {};
   const validUser = typeof username === "string" && safeEqual(username, ADMIN_USERNAME);
-  const validPass = typeof password === "string" && safeEqual(password, ADMIN_PASSWORD);
+  let validPass = false;
+  if (typeof password === "string") {
+    if (ADMIN_PASSWORD_HASH) {
+      validPass = bcrypt.compareSync(password, ADMIN_PASSWORD_HASH);
+    } else {
+      validPass = safeEqual(password, ADMIN_PASSWORD);
+    }
+  }
 
   if (!validUser || !validPass) {
     return res.status(401).json({ error: "Usuario o contraseña incorrectos." });
@@ -5645,21 +5690,42 @@ app.get("/api/corredor/me", requireCorredorAuth, (req, res) => {
 });
 
 /**
+ * POST /api/corredor/events/auth
+ * Intercambia el JWT (Authorization: Bearer) por un token de un solo uso con TTL
+ * de 30 s para abrir el EventSource. El JWT completo nunca viaja en la URL y por lo
+ * tanto no queda en logs de acceso del servidor ni en el historial del navegador.
+ * El cliente debe llamar este endpoint justo antes de abrir el EventSource.
+ */
+app.post("/api/corredor/events/auth", requireCorredorAuth, (req, res) => {
+  const sseToken = issueSseToken(req.corredor.id);
+  res.json({ token: sseToken });
+});
+
+/**
  * GET /api/corredor/events
  * Stream SSE de notificaciones en tiempo real (toasts): "siniestro-abierto" (un
  * cliente de la cartera abrió un siniestro), "poliza-por-vencer" (una póliza de la
  * cartera cruzó el umbral de 7 días) y "emision-resuelta" (gerencia aprobó/rechazó una
- * solicitud de emisión). El token viaja en `?token=` (única excepción a
- * Authorization: Bearer — EventSource del navegador no permite headers personalizados).
+ * solicitud de emisión). El token viaja en `?token=` como UUID de un solo uso (TTL 30 s)
+ * obtenido de POST /api/corredor/events/auth — nunca el JWT completo.
  */
-app.get("/api/corredor/events", requireCorredorAuth, (req, res) => {
+app.get("/api/corredor/events", (req, res) => {
+  const rawToken = typeof req.query.token === "string" ? req.query.token : "";
+  const corredorId = consumeSseToken(rawToken);
+  if (!corredorId) {
+    return res.status(401).json({ error: "Token SSE inválido o expirado." });
+  }
+  const corredor = corredoresService.buscarPorId(corredorId);
+  if (!corredor || !corredor.activo) {
+    return res.status(401).json({ error: "Cuenta no encontrada o desactivada." });
+  }
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "X-Accel-Buffering": "no",
   });
-  registerCorredorEventStream(req.corredor.id, res);
+  registerCorredorEventStream(corredor.id, res);
   sendSse(res, "connected", { ok: true });
 
   // Mantiene la conexión viva a través de proxies que cierran streams inactivos.
@@ -5673,7 +5739,7 @@ app.get("/api/corredor/events", requireCorredorAuth, (req, res) => {
 
   req.on("close", () => {
     clearInterval(keepAlive);
-    unregisterCorredorEventStream(req.corredor.id, res);
+    unregisterCorredorEventStream(corredor.id, res);
   });
 });
 
